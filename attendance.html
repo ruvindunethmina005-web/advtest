@@ -478,13 +478,18 @@
                 return showScanResultModal('ACCESS DENIED', 'Invalid Terminal ID', 'error');
             }
 
-            const company = String(emp.companyName || emp.company || '').toUpperCase();
+            const companyStr = String(emp.companyName || emp.company || '').toUpperCase();
+            const siteStr = String(emp.site || '').toUpperCase();
+            const deptStr = String(emp.dept || emp.department || '').toUpperCase();
             
-            const isAlcEmp = company.includes('ALC');
-            const isStdEmp = company.includes('KDC') || company.includes('MOVEIT') || company.includes('VAS');
+            // Check across company, site, and department fields to prevent false rejections
+            const searchContext = `${companyStr} ${siteStr} ${deptStr}`;
+            
+            const isAlcEmp = searchContext.includes('ALC');
+            const isStdEmp = searchContext.includes('KDC') || searchContext.includes('MOVEIT') || searchContext.includes('VAS');
 
             if (!isAlcEmp && !isStdEmp) {
-                return showScanResultModal('RESTRICTED ACCESS', 'Unauthorized personnel company.', 'error');
+                return showScanResultModal('RESTRICTED ACCESS', 'Unauthorized personnel company/site.', 'error');
             }
 
             // --- Intelligent Routing based on Employee Company ---
