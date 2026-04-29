@@ -274,11 +274,19 @@
             const role = loggedInSysUser?.role || 'USER';
             const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
 
-            // ALC Security Assigned Metrics & Redeemed Overall Metrics
+            // Metrics Logic 
             const alcTokens = todayTokens.filter(t => t.mealName); // Tokens with a specific mealName
+            
+            // Extracting specific departments for KDC metric column
+            const kdcTokens = todayTokens.filter(t => {
+                const dept = String(t.dept || '').toUpperCase().trim();
+                return dept === 'KDC' || dept === 'KDC VAS' || dept === 'MOVEIT';
+            });
+            
             const redeemedTokens = todayTokens.filter(t => t.status === 'CONSUMED' || t.mealRedeemed === true);
             
             document.getElementById('stat-issued-alc').innerText = alcTokens.length;
+            document.getElementById('stat-issued-kdc').innerText = kdcTokens.length;
             document.getElementById('stat-redeemed-emp').innerText = redeemedTokens.length;
 
             // --- Meal Breakdown Calculation ---
@@ -622,8 +630,8 @@
                 </div>
             </div>
 
-            <!-- Two-Column Focus Metrics -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 shrink-0 max-w-4xl mx-auto w-full">
+            <!-- THREE-Column Focus Metrics -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 shrink-0 max-w-4xl mx-auto w-full">
                 <!-- Security ALC Assignment Metric -->
                 <div class="bg-slate-800 p-5 rounded-2xl border border-indigo-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
                     <div class="absolute -right-4 -top-4 w-20 h-20 bg-indigo-500/10 rounded-full pointer-events-none"></div>
@@ -632,6 +640,16 @@
                         <span id="stat-issued-alc" class="text-4xl font-black text-indigo-400 drop-shadow-sm">0</span>
                     </div>
                     <div class="w-12 h-12 bg-indigo-900/50 rounded-full flex items-center justify-center text-indigo-500 shadow-inner"><i class="fas fa-ticket-alt text-xl"></i></div>
+                </div>
+
+                <!-- KDC Meal Assign Today Metric -->
+                <div class="bg-slate-800 p-5 rounded-2xl border border-blue-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
+                    <div class="absolute -right-4 -top-4 w-20 h-20 bg-blue-500/10 rounded-full pointer-events-none"></div>
+                    <div>
+                        <span class="text-blue-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">KDC Meal Assign Today</span>
+                        <span id="stat-issued-kdc" class="text-4xl font-black text-blue-400 drop-shadow-sm">0</span>
+                    </div>
+                    <div class="w-12 h-12 bg-blue-900/50 rounded-full flex items-center justify-center text-blue-500 shadow-inner"><i class="fas fa-boxes text-xl"></i></div>
                 </div>
 
                 <!-- Total Redeemed Metric -->
