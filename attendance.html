@@ -51,6 +51,11 @@
         ::-webkit-scrollbar-track { background: #0f172a; }
         ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
         ::-webkit-scrollbar-thumb:hover { background: #475569; }
+        
+        /* Scanner Focus Rings */
+        .scanner-card { transition: all 0.3s ease; }
+        .scanner-card.active-std { box-shadow: 0 0 0 2px #3b82f6, 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+        .scanner-card.active-alc { box-shadow: 0 0 0 2px #6366f1, 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
     </style>
 
     <!-- Firebase SDKs -->
@@ -94,9 +99,10 @@
         let loggedInSysUser = null;
         
         // Scanning State
-        let scanMode = 'STD';
+        let activeInputId = 'std-scanner';
+        let activeWebcamMode = null;
         let html5QrcodeScanner = null;
-        let scanDebounceTimer = null;
+        let scanDebounceTimers = { STD: null, ALC: null };
         let lastKeyTime = Date.now(); // For blocking manual typing
 
         // Loading states to ensure all data arrives before rendering
@@ -176,7 +182,7 @@
             else { bgEl.className = "bg-gradient-to-br from-blue-500 to-blue-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
             
             if(title !== 'VERIFYING...') {
-                setTimeout(() => modal.classList.add('hidden'), 1500); // 1.5 seconds auto close
+                setTimeout(() => modal.classList.add('hidden'), 2000); // 2 seconds auto close
             }
         };
 
@@ -203,10 +209,10 @@
                 if (!initialRenderDone) {
                     document.getElementById('view-loading').classList.add('hidden');
                     document.getElementById('view-attendance').classList.remove('hidden');
-                    setTimeout(() => {
-                        const scanner = document.getElementById('attendance-scanner');
-                        if(scanner) scanner.focus();
-                    }, 100);
+                    
+                    // Default focus
+                    window.setFocusTarget('std-scanner');
+                    
                     initialRenderDone = true;
                 }
             }
@@ -218,7 +224,6 @@
                 if (sessionStr) {
                     loggedInSysUser = JSON.parse(sessionStr);
                     
-                    // Show loader while connecting rapidly
                     document.getElementById('view-loading').classList.remove('hidden');
                     document.getElementById('view-attendance').classList.add('hidden');
                     
@@ -296,59 +301,66 @@
             });
         }
 
-        window.switchScanMode = (mode) => {
-            scanMode = mode;
-            const btnStd = document.getElementById('btn-mode-std');
-            const btnAlc = document.getElementById('btn-mode-alc');
-            const dropdownContainer = document.getElementById('alc-dropdown-container');
-            const scannerWrapper = document.getElementById('scanner-wrapper');
-            const input = document.getElementById('attendance-scanner');
-            const icon = document.getElementById('scanner-input-icon');
-            const helper = document.getElementById('scanner-helper-text');
-
-            if (mode === 'STD') {
-                btnStd.className = "px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-blue-600 text-white shadow-md flex items-center gap-2";
-                btnAlc.className = "px-6 py-2.5 rounded-lg text-sm font-bold transition-all text-slate-400 hover:text-slate-200 flex items-center gap-2";
-                
-                dropdownContainer.classList.add('hidden');
-                scannerWrapper.classList.remove('hidden'); 
-                
-                input.classList.remove('border-indigo-500/60', 'focus:border-indigo-500', 'focus:ring-indigo-500/20', 'shadow-[0_0_15px_rgba(99,102,241,0.15)]');
-                input.classList.add('border-blue-500/60', 'focus:border-blue-500', 'focus:ring-blue-500/20', 'shadow-[0_0_15px_rgba(59,130,246,0.15)]');
-                icon.className = "fas fa-qrcode text-blue-500 text-xl md:text-2xl transition-colors";
-                if(helper) helper.innerHTML = '<i class="fas fa-keyboard mr-1"></i> Automatic scanner input mode active...';
-                
-                setTimeout(() => document.getElementById('attendance-scanner').focus(), 100);
-            } else {
-                btnAlc.className = "px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-indigo-600 text-white shadow-md flex items-center gap-2";
-                btnStd.className = "px-6 py-2.5 rounded-lg text-sm font-bold transition-all text-slate-400 hover:text-slate-200 flex items-center gap-2";
-                
-                dropdownContainer.classList.remove('hidden');
-                document.getElementById('alc-meal-select').value = ""; 
-                scannerWrapper.classList.add('hidden'); 
-                
-                input.classList.remove('border-blue-500/60', 'focus:border-blue-500', 'focus:ring-blue-500/20', 'shadow-[0_0_15px_rgba(59,130,246,0.15)]');
-                input.classList.add('border-indigo-500/60', 'focus:border-indigo-500', 'focus:ring-indigo-500/20', 'shadow-[0_0_15px_rgba(99,102,241,0.15)]');
-                icon.className = "fas fa-qrcode text-indigo-500 text-xl md:text-2xl transition-colors";
-                if(helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Select meal to activate scanner';
+        // --- Focus & Interaction Management ---
+        window.setFocusTarget = (id) => {
+            activeInputId = id;
+            
+            const stdCard = document.getElementById('card-std');
+            const alcCard = document.getElementById('card-alc');
+            
+            if(stdCard) stdCard.classList.remove('active-std');
+            if(alcCard) alcCard.classList.remove('active-alc');
+            
+            const input = document.getElementById(id);
+            if (input) {
+                input.focus();
+                if (id === 'std-scanner' && stdCard) stdCard.classList.add('active-std');
+                if (id === 'alc-scanner' && alcCard) alcCard.classList.add('active-alc');
             }
+        };
+
+        window.keepFocus = () => {
+            setTimeout(() => {
+                const el = document.getElementById(activeInputId);
+                if (!el) return;
+                
+                const isAttendanceView = !document.getElementById('view-attendance').classList.contains('hidden');
+                const activeEl = document.activeElement;
+                const activeTag = activeEl ? activeEl.tagName.toLowerCase() : '';
+                
+                // Allow interaction with other inputs/dropdowns (like search or meal select)
+                if ((activeTag === 'input' || activeTag === 'select') && activeEl.id !== activeInputId) return; 
+
+                const isCameraActive = !document.getElementById('webcam-modal').classList.contains('hidden');
+
+                if (isAttendanceView && !isCameraActive && document.activeElement !== el) {
+                    // Only refocus if the scanner is actually visible
+                    if (!el.parentElement.parentElement.classList.contains('hidden')) {
+                        el.focus({ preventScroll: true });
+                    }
+                }
+            }, 100);
         };
 
         window.handleAlcSelection = () => {
             const val = document.getElementById('alc-meal-select').value;
-            const scannerWrapper = document.getElementById('scanner-wrapper');
-            const helper = document.getElementById('scanner-helper-text');
+            const scannerWrapper = document.getElementById('alc-scanner-wrapper');
+            const placeholder = document.getElementById('alc-placeholder');
             
             if (val) {
                 scannerWrapper.classList.remove('hidden');
-                if(helper) helper.innerHTML = '<i class="fas fa-check-circle mr-1 text-indigo-400"></i> Ready for ALC scan';
-                setTimeout(() => document.getElementById('attendance-scanner').focus(), 100);
+                placeholder.classList.add('hidden');
+                window.setFocusTarget('alc-scanner');
             } else {
                 scannerWrapper.classList.add('hidden');
-                if(helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Select meal to activate scanner';
+                placeholder.classList.remove('hidden');
+                window.setFocusTarget('std-scanner');
             }
         };
 
+        // --------------------------------------------------------------------
+        // LEDGER RENDER
+        // --------------------------------------------------------------------
         window.renderLedger = () => {
             const listEl = document.getElementById('attendance-list');
             const term = (document.getElementById('attendance-search')?.value || '').toLowerCase();
@@ -356,10 +368,8 @@
             const role = loggedInSysUser?.role || 'USER';
             const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
 
-            // Metrics
             document.getElementById('stat-cleared-emp').innerText = todayTokens.length;
 
-            // Site Tally
             const siteCounts = {};
             todayTokens.forEach(t => { 
                 const siteName = t.site && t.site !== '-' ? t.site : 'Unassigned Site';
@@ -379,9 +389,7 @@
             const siteContainer = document.getElementById('site-wise-container');
             if (siteContainer) siteContainer.innerHTML = siteHtml;
 
-            // Render Ledger List
             let html = '';
-            
             let filteredTokens = todayTokens.filter(t => {
                 if (!term) return true;
                 const tId = String(t.empId || '').toLowerCase();
@@ -398,14 +406,18 @@
 
             filteredTokens.forEach(log => {
                 const initial = String(log.empName || '?').charAt(0).toUpperCase();
-                const mealLabel = log.mealName ? `<span class="text-[9px] uppercase font-bold text-indigo-400 tracking-wider bg-indigo-500/10 px-2 py-0.5 rounded ml-2 border border-indigo-500/20">${log.mealName}</span>` : '';
+                const mealLabel = log.mealName ? `<span class="text-[9px] uppercase font-bold text-indigo-400 tracking-wider bg-indigo-500/10 px-2 py-0.5 rounded ml-2 border border-indigo-500/20"><i class="fas fa-fish mr-1"></i> ${log.mealName}</span>` : '';
                 const displayDept = log.dept || '-';
                 const timeStr = log.issuedAt ? new Date(log.issuedAt.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Just now';
+                
+                // Color code based on type
+                const cardColor = log.mealName ? 'bg-indigo-900/10 border-indigo-900/40' : 'bg-blue-900/10 border-blue-900/40';
+                const avatarColor = log.mealName ? 'bg-indigo-900/30 text-indigo-400' : 'bg-blue-900/30 text-blue-400';
 
                 html += `
-                    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-2xl border bg-blue-900/10 border-blue-900/40 hover:shadow-lg transition-all duration-300 mb-3">
+                    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-2xl border ${cardColor} hover:shadow-lg transition-all duration-300 mb-3">
                         <div class="flex items-center gap-4 shrink-0 overflow-hidden w-full sm:w-auto mb-3 sm:mb-0">
-                            <div class="w-12 h-12 rounded-full shrink-0 bg-blue-900/30 text-blue-400 flex items-center justify-center font-bold text-lg shadow-inner">
+                            <div class="w-12 h-12 rounded-full shrink-0 ${avatarColor} flex items-center justify-center font-bold text-lg shadow-inner">
                                 ${initial}
                             </div>
                             <div class="min-w-0">
@@ -413,7 +425,7 @@
                                 <div class="text-xs text-slate-400 flex items-center mt-1 flex-wrap gap-2">
                                     <span class="font-mono bg-slate-700 px-1.5 py-0.5 rounded border border-slate-600 text-slate-200">${log.empId || '-'}</span>
                                     <span class="truncate">${displayDept}</span>
-                                    <span class="text-blue-500 ml-1"><i class="far fa-clock"></i> ${timeStr}</span>
+                                    <span class="text-slate-500 ml-1"><i class="far fa-clock"></i> ${timeStr}</span>
                                     ${mealLabel}
                                 </div>
                             </div>
@@ -445,7 +457,7 @@
         // --------------------------------------------------------------------
         // SCANNER LOGIC 
         // --------------------------------------------------------------------
-        window.executeScan = async (val) => {
+        window.executeScan = async (val, mode) => {
             if (!val || !auth.currentUser) return;
             
             showScanResultModal('VERIFYING...', 'Processing...', 'info');
@@ -457,7 +469,6 @@
                 return showScanResultModal('ALREADY ACTIVE', `${alreadyMarked.empName} has already accessed.`, 'warning');
             }
 
-            // DYNAMIC FETCH: Pull specific user directly
             let emp = null;
             try {
                 const empRef = doc(db, 'artifacts', appId, 'public', 'data', 'employees', val);
@@ -488,18 +499,18 @@
             const isAlcEmp = company.includes('ALC');
             const isStdEmp = company.includes('KDC') || company.includes('MOVEIT') || company.includes('VAS');
 
-            // --- Enforce Strict Company Rules Based on Selected Mode ---
-            if (scanMode === 'ALC' && !isAlcEmp) {
-                return showScanResultModal('RESTRICTED ACCESS', 'ALC Meal Assign is restricted to KDC, Moveit, & KDC Vas personnel only.', 'warning');
+            // --- Enforce Strict Company Rules Based on Scan Origin ---
+            if (mode === 'ALC' && !isAlcEmp) {
+                return showScanResultModal('RESTRICTED ACCESS', 'ALC Meal Assign is strictly restricted to ALC personnel only.', 'warning');
             }
-            if (scanMode === 'STD' && !isStdEmp) {
-                return showScanResultModal('RESTRICTED ACCESS', 'Standard Check-in is strictly restricted to ALC personnel only.', 'warning');
+            if (mode === 'STD' && !isStdEmp) {
+                return showScanResultModal('RESTRICTED ACCESS', 'Standard Check-in is restricted to KDC, Moveit, & KDC Vas personnel only.', 'warning');
             }
 
             let mealName = null;
             let appliedCost = 0;
 
-            if (scanMode === 'ALC') {
+            if (mode === 'ALC') {
                 mealName = document.getElementById('alc-meal-select')?.value;
                 if (!mealName) return showScanResultModal('MISSING SELECTION', 'Please select an ALC meal variety.', 'warning');
                 appliedCost = parseFloat(alcMealItems[mealName]) || 0;
@@ -529,23 +540,20 @@
                     costs: { total: appliedCost }
                 };
 
-                if (scanMode === 'ALC' && mealName) {
+                if (mode === 'ALC' && mealName) {
                     payload.mealName = mealName;
                     payload.costApplied = appliedCost;
                 }
 
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), payload);
                 
-                if (scanMode === 'ALC') {
-                    const alcSelect = document.getElementById('alc-meal-select');
-                    if (alcSelect) alcSelect.value = "";
-                    const scannerWrapper = document.getElementById('scanner-wrapper');
-                    if (scannerWrapper) scannerWrapper.classList.add('hidden');
-                    const helper = document.getElementById('scanner-helper-text');
-                    if (helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Ensure meal is selected before scanning';
+                if (mode === 'ALC') {
+                    // Reset ALC Selection to enforce manual choice next time
+                    document.getElementById('alc-meal-select').value = "";
+                    window.handleAlcSelection(); // Will hide ALC scanner and focus STD
                 }
                 
-                const mealMsg = mealName ? `\nSelected: ${mealName}` : '';
+                const mealMsg = mealName ? `\nAssigned: ${mealName}` : '';
                 showScanResultModal('ENTRY APPROVED', `${emp.name}${mealMsg}`, 'success');
             } catch (e) {
                 console.error("Error:", e);
@@ -553,10 +561,8 @@
             }
         };
 
-        // --- SPEED TRAP: Block Human Typing, Only Allow Fast Scanner Input ---
-        window.handleScannerInput = (event) => {
+        window.handleScannerInput = (event, mode) => {
             const currentTime = Date.now();
-            
             if (currentTime - lastKeyTime > 60 && event.key !== 'Enter') {
                 event.target.value = '';
             }
@@ -564,54 +570,41 @@
 
             if (event.key === 'Enter') {
                 event.preventDefault();
-                if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
+                if(scanDebounceTimers[mode]) clearTimeout(scanDebounceTimers[mode]);
                 
                 const val = event.target.value.trim().toUpperCase();
-                if (val.length >= 2) executeScan(val);
+                if (val.length >= 2) executeScan(val, mode);
                 
                 event.target.value = ''; 
             }
         };
         
-        window.handleAutoScan = (event) => {
-            if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
-            scanDebounceTimer = setTimeout(() => {
+        window.handleAutoScan = (event, mode) => {
+            if(scanDebounceTimers[mode]) clearTimeout(scanDebounceTimers[mode]);
+            scanDebounceTimers[mode] = setTimeout(() => {
                 const val = event.target.value.trim().toUpperCase();
                 if (val.length >= 2) { 
-                    executeScan(val);
+                    executeScan(val, mode);
                     event.target.value = ''; 
                 }
             }, 200);
         };
 
-        window.keepFocus = (elementId) => {
-            setTimeout(() => {
-                const el = document.getElementById(elementId);
-                if (!el) return;
-                const isAttendanceView = !document.getElementById('view-attendance').classList.contains('hidden');
-                
-                const activeEl = document.activeElement;
-                const activeTag = activeEl ? activeEl.tagName.toLowerCase() : '';
-                
-                if ((activeTag === 'input' || activeTag === 'select') && activeEl.id !== elementId) return; 
-
-                const isCameraActive = !document.getElementById('webcam-modal').classList.contains('hidden');
-
-                if (isAttendanceView && !isCameraActive) {
-                    if (document.activeElement !== el) {
-                        el.focus({ preventScroll: true });
-                    }
-                }
-            }, 100);
-        };
-
-        window.startWebcamScanner = () => {
+        window.startWebcamScanner = (mode) => {
+            activeWebcamMode = mode;
+            const modalTitle = document.getElementById('webcam-title');
+            const icon = mode === 'STD' ? 'fa-user-check' : 'fa-fish';
+            const color = mode === 'STD' ? 'text-blue-500' : 'text-indigo-500';
+            const label = mode === 'STD' ? 'Standard Scanner Feed' : 'ALC Scanner Feed';
+            
+            modalTitle.innerHTML = `<i class="fas ${icon} mr-3 ${color}"></i> ${label}`;
             document.getElementById('webcam-modal').classList.remove('hidden');
+            
             if (!html5QrcodeScanner) html5QrcodeScanner = new Html5Qrcode("reader");
             html5QrcodeScanner.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } },
                 (decodedText) => { 
                     stopWebcamScanner(); 
-                    executeScan(decodedText.trim().toUpperCase()); 
+                    executeScan(decodedText.trim().toUpperCase(), activeWebcamMode); 
                 },
                 () => {}
             ).catch(err => { 
@@ -623,7 +616,9 @@
         window.stopWebcamScanner = () => {
             document.getElementById('webcam-modal').classList.add('hidden');
             if(html5QrcodeScanner) html5QrcodeScanner.stop().catch(()=>{});
-            document.getElementById('attendance-scanner').focus();
+            
+            if (activeWebcamMode === 'STD') window.setFocusTarget('std-scanner');
+            else if (activeWebcamMode === 'ALC') window.setFocusTarget('alc-scanner');
         };
 
         window.reviseAttendance = async (tokenId, empName, status) => {
@@ -655,7 +650,7 @@
         };
     </script>
 </head>
-<body class="bg-[#0B1120] text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500" onclick="keepFocus('attendance-scanner')">
+<body class="bg-[#0B1120] text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500" onclick="keepFocus()">
 
     <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
 
@@ -667,13 +662,12 @@
                     <i class="fas fa-arrow-left"></i>
                 </button>
                 <div class="bg-blue-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(37,99,235,0.4)]">
-                    <i class="fas fa-user-check text-white text-lg"></i>
+                    <i class="fas fa-desktop text-white text-lg"></i>
                 </div>
-                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Attendance<span class="text-blue-500">Terminal</span></span>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Terminal<span class="text-blue-500">Node</span></span>
             </div>
             
             <div class="flex items-center gap-4">
-                <!-- Auto-Sync Loading Percentage Indicator -->
                 <div id="sync-indicator" class="hidden flex-col items-end gap-1.5 bg-blue-500/10 border border-blue-500/20 px-4 py-2 rounded-xl">
                     <div class="flex items-center text-[9px] uppercase tracking-widest text-blue-400 font-bold">
                         <i class="fas fa-satellite-dish animate-pulse mr-2"></i> Syncing <span id="sync-percent" class="ml-2 w-6 text-right text-blue-300 font-mono">0%</span>
@@ -697,11 +691,11 @@
             <div class="relative flex items-center justify-center mb-6">
                 <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-blue-500 opacity-20"></div>
                 <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-blue-500 to-blue-700 shadow-lg shadow-blue-500/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
-                    <i class="fas fa-user-check text-white text-3xl"></i>
+                    <i class="fas fa-desktop text-white text-3xl"></i>
                 </div>
             </div>
             <div class="text-center space-y-2">
-                <h2 class="text-white font-extrabold text-3xl tracking-tight">Attendance<span class="text-blue-500">Terminal</span></h2>
+                <h2 class="text-white font-extrabold text-3xl tracking-tight">Terminal<span class="text-blue-500">Node</span></h2>
             </div>
         </div>
 
@@ -719,63 +713,92 @@
         </div>
 
         <!-- MAIN ATTENDANCE VIEW -->
-        <div id="view-attendance" class="hidden container mx-auto px-4 py-6 animate-fade-in flex-1 flex flex-col">
+        <div id="view-attendance" class="hidden container mx-auto px-4 py-8 animate-fade-in flex-1 flex flex-col">
             
-            <div class="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 shrink-0 gap-4">
-                <div>
-                    <h2 class="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
-                        Terminal Node Alpha
-                    </h2>
-                    <p class="text-slate-400 mt-2 font-medium">Verify employee presence and assign specific meal configurations.</p>
-                </div>
+            <div class="mb-6 shrink-0 text-center">
+                <h2 class="text-3xl font-extrabold text-white tracking-tight">
+                    Multi-Role Node Alpha
+                </h2>
+                <p class="text-slate-400 mt-2 font-medium">Dual scanner configuration active. Click an input field to route external physical scanners.</p>
             </div>
 
-            <!-- SCANNER MODULE -->
-            <div class="mb-6 w-full max-w-5xl mx-auto shrink-0">
-                <div class="flex justify-center mb-6">
-                    <div class="bg-slate-800/80 p-1.5 rounded-xl flex gap-1 border border-slate-700 shadow-sm backdrop-blur-md">
-                        <button id="btn-mode-std" onclick="switchScanMode('STD')" class="px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-blue-600 text-white shadow-md flex items-center gap-2">
-                            <i class="fas fa-user-check"></i> Standard Check-in
-                        </button>
-                        <button id="btn-mode-alc" onclick="switchScanMode('ALC')" class="px-6 py-2.5 rounded-lg text-sm font-bold transition-all text-slate-400 hover:text-slate-200 flex items-center gap-2">
-                            <i class="fas fa-fish"></i> ALC Meal Assign
-                        </button>
+            <!-- DUAL SCANNER MODULES -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10 w-full max-w-6xl mx-auto shrink-0">
+                
+                <!-- 1. STANDARD CHECK-IN SCANNER -->
+                <div id="card-std" class="scanner-card bg-[#0f172a]/80 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-8 flex flex-col items-center relative overflow-hidden active-std cursor-pointer" onclick="setFocusTarget('std-scanner')">
+                    <div class="absolute -top-10 -right-10 w-32 h-32 bg-blue-600/10 rounded-full blur-2xl pointer-events-none"></div>
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="bg-blue-500/20 p-3 rounded-xl border border-blue-500/30 text-blue-400">
+                            <i class="fas fa-user-check text-2xl"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-xl font-bold text-white tracking-tight">Standard Check-in</h3>
+                            <p class="text-xs text-blue-400 font-bold uppercase tracking-widest mt-1">KDC • Moveit • KDC Vas</p>
+                        </div>
                     </div>
-                </div>
 
-                <div class="bg-[#0f172a]/60 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-6 lg:p-10 flex flex-col items-center justify-center min-h-[220px]">
+                    <div class="w-full relative max-w-md">
+                        <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none">
+                            <i class="fas fa-qrcode text-blue-500 text-xl transition-colors"></i>
+                        </div>
+                        <input type="text" id="std-scanner" inputmode="none" placeholder="SCAN STD ID . . ." 
+                            class="w-full pl-16 pr-6 py-5 border-2 border-slate-700 focus:border-blue-500 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 font-mono text-center text-lg tracking-[0.2em] outline-none transition scanner-input text-white select-none cursor-text" 
+                            onkeydown="handleScannerInput(event, 'STD')" oninput="handleAutoScan(event, 'STD')" onfocus="setFocusTarget('std-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
+                    </div>
                     
-                    <!-- ALC Selection Dropdown -->
-                    <div id="alc-dropdown-container" class="w-full max-w-2xl mb-6 hidden animate-fade-in">
-                        <div class="relative">
-                            <select id="alc-meal-select" class="w-full border border-slate-700 bg-[#1A2234] rounded-xl px-5 py-4 text-slate-200 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 outline-none transition font-bold appearance-none cursor-pointer shadow-inner" onchange="handleAlcSelection()">
-                                <option value="" disabled selected>-- Select ALC Meal Variety --</option>
-                            </select>
-                            <div class="absolute right-5 top-5 pointer-events-none text-slate-400"><i class="fas fa-chevron-down"></i></div>
+                    <button onclick="startWebcamScanner('STD')" class="mt-6 w-full max-w-md flex items-center justify-center text-blue-400 hover:text-white font-bold text-sm bg-blue-500/10 hover:bg-blue-600 border border-blue-500/30 px-6 py-3 rounded-xl transition shadow-sm">
+                        <i class="fas fa-camera text-lg mr-2"></i> Optical STD Scanner
+                    </button>
+                </div>
+
+                <!-- 2. ALC MEAL ASSIGN SCANNER -->
+                <div id="card-alc" class="scanner-card bg-[#0f172a]/80 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-8 flex flex-col items-center relative overflow-hidden cursor-pointer" onclick="setFocusTarget('alc-scanner')">
+                    <div class="absolute -top-10 -left-10 w-32 h-32 bg-indigo-600/10 rounded-full blur-2xl pointer-events-none"></div>
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="bg-indigo-500/20 p-3 rounded-xl border border-indigo-500/30 text-indigo-400">
+                            <i class="fas fa-fish text-2xl"></i>
+                        </div>
+                        <div>
+                            <h3 class="text-xl font-bold text-white tracking-tight">ALC Meal Assign</h3>
+                            <p class="text-xs text-indigo-400 font-bold uppercase tracking-widest mt-1">ALC Personnel Only</p>
                         </div>
                     </div>
 
-                    <div id="scanner-wrapper" class="w-full flex flex-col items-center animate-fade-in">
-                        <div id="scanner-container" class="w-full relative max-w-3xl">
-                            <div class="absolute inset-y-0 left-6 sm:left-10 flex items-center pointer-events-none">
-                                <i id="scanner-input-icon" class="fas fa-qrcode text-blue-500 text-xl md:text-2xl transition-colors"></i>
+                    <!-- Dropdown -->
+                    <div class="w-full max-w-md relative mb-5">
+                        <select id="alc-meal-select" class="w-full border-2 border-slate-700 bg-slate-900/50 rounded-2xl px-5 py-4 text-slate-200 focus:border-indigo-500 outline-none transition font-bold appearance-none cursor-pointer" onchange="handleAlcSelection()">
+                            <option value="" disabled selected>-- Select ALC Meal Variety --</option>
+                        </select>
+                        <div class="absolute right-5 top-4 pointer-events-none text-slate-400"><i class="fas fa-chevron-down"></i></div>
+                    </div>
+
+                    <!-- Hidden Scanner Input -->
+                    <div id="alc-scanner-wrapper" class="w-full flex flex-col items-center hidden max-w-md animate-fade-in">
+                        <div class="w-full relative">
+                            <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none">
+                                <i class="fas fa-qrcode text-indigo-500 text-xl transition-colors"></i>
                             </div>
-                            <!-- 'pointer-events-none', 'select-none', and 'onpaste' prevent human typing and copying -->
-                            <input type="text" id="attendance-scanner" inputmode="none" placeholder="SCAN PERSONNEL QR . . ." 
-                                class="w-full pl-16 sm:pl-20 pr-6 py-5 sm:py-6 border-2 border-blue-500/60 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 font-mono text-center text-lg sm:text-2xl tracking-[0.15em] sm:tracking-[0.25em] outline-none transition scanner-input shadow-[0_0_15px_rgba(59,130,246,0.15)] text-white pointer-events-none select-none" 
-                                onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus('attendance-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
+                            <input type="text" id="alc-scanner" inputmode="none" placeholder="SCAN ALC ID . . ." 
+                                class="w-full pl-16 pr-6 py-5 border-2 border-slate-700 focus:border-indigo-500 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 font-mono text-center text-lg tracking-[0.2em] outline-none transition scanner-input text-white select-none cursor-text" 
+                                onkeydown="handleScannerInput(event, 'ALC')" oninput="handleAutoScan(event, 'ALC')" onfocus="setFocusTarget('alc-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
                         </div>
-                        
-                        <button onclick="startWebcamScanner()" class="mt-5 w-full max-w-sm flex items-center justify-center text-blue-400 hover:text-blue-300 font-bold text-sm bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 px-6 py-3 rounded-xl transition shadow-sm">
-                            <i class="fas fa-camera text-lg mr-2"></i> Launch Optical Scanner
+                        <button onclick="startWebcamScanner('ALC')" class="mt-6 w-full flex items-center justify-center text-indigo-400 hover:text-white font-bold text-sm bg-indigo-500/10 hover:bg-indigo-600 border border-indigo-500/30 px-6 py-3 rounded-xl transition shadow-sm">
+                            <i class="fas fa-camera text-lg mr-2"></i> Optical ALC Scanner
                         </button>
                     </div>
-                    <p id="scanner-helper-text" class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-4"><i class="fas fa-keyboard mr-1"></i> Automatic scanner input mode active...</p>
+
+                    <!-- Placeholder text shown when scanner is hidden -->
+                    <div id="alc-placeholder" class="text-center py-6 text-slate-500 animate-fade-in">
+                        <i class="fas fa-hand-pointer text-3xl mb-3 opacity-50"></i>
+                        <p class="text-sm font-bold">Select an ALC meal above to unlock scanner.</p>
+                    </div>
                 </div>
+
             </div>
 
             <!-- Single Focus Metric -->
-            <div class="mb-6 shrink-0 max-w-md">
+            <div class="mb-6 shrink-0 max-w-md mx-auto w-full">
                 <div class="bg-slate-800 p-5 rounded-2xl border border-emerald-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
                     <div class="absolute -right-4 -top-4 w-20 h-20 bg-emerald-500/10 rounded-full pointer-events-none"></div>
                     <div>
@@ -787,7 +810,7 @@
             </div>
 
             <!-- Site-wise Scanned Counts -->
-            <div class="mb-6 shrink-0">
+            <div class="mb-6 shrink-0 max-w-6xl mx-auto w-full">
                 <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2"><i class="fas fa-map-marker-alt mr-1"></i> Site-Wise Scan Distribution</h4>
                 <div id="site-wise-container" class="flex flex-wrap gap-2">
                     <!-- Dynamic Site Counts Injected Here -->
@@ -795,7 +818,7 @@
             </div>
 
             <!-- List Area Header -->
-            <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4 mt-6">
+            <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4 mt-6 max-w-6xl mx-auto w-full">
                 <h3 class="text-base font-bold text-white"><i class="fas fa-list-ul mr-2 text-slate-400"></i> Issued Tokens Ledger</h3>
                 <div class="w-full md:w-80">
                     <div class="bg-slate-800 px-4 py-2.5 rounded-xl border border-slate-700 shadow-sm flex items-center gap-3 w-full transition-shadow focus-within:ring-2 focus-within:ring-blue-500/50">
@@ -805,8 +828,8 @@
                 </div>
             </div>
 
-            <!-- Expanding List Area (Page scrolling enabled) -->
-            <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col flex-1 min-h-[400px]">
+            <!-- Expanding List Area -->
+            <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col flex-1 min-h-[400px] max-w-6xl mx-auto w-full">
                 <div class="p-4 flex-grow" id="attendance-list">
                     <!-- Data populated reactively via JavaScript -->
                 </div>
@@ -833,11 +856,11 @@
     <div id="webcam-modal" class="fixed inset-0 bg-[#0B1120]/95 hidden z-[80] flex flex-col items-center justify-center p-4 backdrop-blur-sm">
         <div class="bg-[#131B2B] rounded-3xl overflow-hidden w-full max-w-md relative shadow-2xl border border-slate-800">
             <div class="bg-[#1F2937] text-white p-5 flex justify-between items-center border-b border-slate-700">
-                <span class="font-bold flex items-center text-sm uppercase tracking-wider"><i class="fas fa-video mr-3 text-blue-500"></i> Optical Feed Active</span>
+                <span id="webcam-title" class="font-bold flex items-center text-sm uppercase tracking-wider"><i class="fas fa-video mr-3 text-blue-500"></i> Optical Feed Active</span>
                 <button onclick="stopWebcamScanner()" class="text-slate-400 hover:text-white bg-slate-800 hover:bg-red-500 rounded-lg p-2 transition"><i class="fas fa-times"></i></button>
             </div>
             <div id="reader" class="w-full bg-[#0B1120] min-h-[350px]"></div>
-            <div class="p-5 text-center text-xs font-bold uppercase tracking-widest text-blue-400 bg-[#1F2937] border-t border-slate-700">Awaiting QR / Barcode Interface...</div>
+            <div class="p-5 text-center text-xs font-bold uppercase tracking-widest text-slate-400 bg-[#1F2937] border-t border-slate-700">Awaiting QR / Barcode Interface...</div>
         </div>
     </div>
 
