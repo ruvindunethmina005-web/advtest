@@ -490,7 +490,10 @@
 
             // --- Enforce Strict Company Rules Based on Selected Mode ---
             if (scanMode === 'ALC' && !isAlcEmp) {
-                return showScanResultModal('RESTRICTED ACCESS', 'ALC Meal Assign is strictly restricted to ALC personnel only.', 'warning');
+                return showScanResultModal('RESTRICTED ACCESS', 'ALC Meal Assign is restricted to KDC, Moveit, & KDC Vas personnel only.', 'warning');
+            }
+            if (scanMode === 'STD' && !isStdEmp) {
+                return showScanResultModal('RESTRICTED ACCESS', 'Standard Check-in is strictly restricted to ALC personnel only.', 'warning');
             }
 
             let mealName = null;
