@@ -190,8 +190,13 @@
             } catch (err) { console.error("Auth Error:", err); }
         };
 
+        // FIXED BACK BUTTON
         window.goToDashboard = () => {
-            // Placeholder: in a real environment this maps to the primary UI dashboard
+            if (window.history.length > 1) {
+                window.history.back();
+            } else {
+                window.location.href = '/'; 
+            }
         };
 
         function checkDataLoaded() {
@@ -274,40 +279,46 @@
             const role = loggedInSysUser?.role || 'USER';
             const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
 
-            // Metrics Logic - Standardized helper to ensure we match redeemed state perfectly
-            const isRedeemed = (t) => String(t.status).toUpperCase() === 'CONSUMED' || t.mealRedeemed === true;
-            
-            const alcTokens = todayTokens.filter(t => t.mealName && String(t.mealName).trim() !== '');
-            
-            // Extracted Specific Departments using `.includes()` to account for padding or variations (e.g. "KDC - Ops")
-            const kdcTokens = todayTokens.filter(t => {
-                const deptStr = String(t.dept || t.department || '').toUpperCase();
-                return deptStr.includes('KDC') || deptStr.includes('MOVEIT');
+            // Overall Metrics
+            const redeemedTokens = todayTokens.filter(t => t.status === 'CONSUMED' || t.mealRedeemed === true);
+            document.getElementById('stat-redeemed-emp').innerText = redeemedTokens.length;
+
+            // --- Site-Wise Scan Distribution Calculation ---
+            const siteCounts = {};
+            redeemedTokens.forEach(t => {
+                // Determine site logic. Adjust based on your schema structure.
+                const site = (t.site || t.location || t.dept || 'UNKNOWN').toUpperCase();
+                siteCounts[site] = (siteCounts[site] || 0) + 1;
+            });
+
+            let siteHtml = '';
+            Object.entries(siteCounts)
+                .sort((a,b) => b[1] - a[1]) // Sort descending by count
+                .forEach(([site, count]) => {
+                siteHtml += `
+                    <div class="bg-[#1e2738] border border-[#2d3a52] px-4 py-2.5 rounded-[10px] flex items-center gap-3 shadow-sm shrink-0">
+                        <span class="text-xs font-bold text-slate-300 uppercase tracking-widest">${site}</span>
+                        <span class="bg-[#2a4066] text-[#6d9eeb] font-black px-2.5 py-1 rounded-md text-xs leading-none">${count}</span>
+                    </div>
+                `;
             });
             
-            const redeemedTokens = todayTokens.filter(isRedeemed);
+            if (Object.keys(siteCounts).length === 0) {
+                siteHtml = `<div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-4 py-2 border border-slate-800 rounded-xl bg-[#1e2738]/50">AWAITING SCANS</div>`;
+            }
             
-            const alcRedeemed = alcTokens.filter(isRedeemed).length;
-            const kdcRedeemed = kdcTokens.filter(isRedeemed).length;
-
-            // Bind values to UI safely
-            document.getElementById('stat-issued-alc').innerText = alcTokens.length;
-            const elRedeemedAlc = document.getElementById('stat-redeemed-alc');
-            if(elRedeemedAlc) elRedeemedAlc.innerText = alcRedeemed;
-
-            document.getElementById('stat-issued-kdc').innerText = kdcTokens.length;
-            const elRedeemedKdc = document.getElementById('stat-redeemed-kdc');
-            if(elRedeemedKdc) elRedeemedKdc.innerText = kdcRedeemed;
-
-            document.getElementById('stat-redeemed-emp').innerText = redeemedTokens.length;
+            const siteDistributionContainer = document.getElementById('site-distribution-container');
+            if (siteDistributionContainer) siteDistributionContainer.innerHTML = siteHtml;
 
             // --- Meal Breakdown Calculation ---
             const mealCounts = {};
-            alcTokens.forEach(t => {
-                const meal = t.mealName;
-                if(!mealCounts[meal]) mealCounts[meal] = { assigned: 0, redeemed: 0 };
-                mealCounts[meal].assigned++;
-                if(isRedeemed(t)) mealCounts[meal].redeemed++;
+            todayTokens.forEach(t => {
+                if (t.mealName) {
+                    const meal = t.mealName;
+                    if(!mealCounts[meal]) mealCounts[meal] = { assigned: 0, redeemed: 0 };
+                    mealCounts[meal].assigned++;
+                    if(t.status === 'CONSUMED' || t.mealRedeemed) mealCounts[meal].redeemed++;
+                }
             });
 
             let breakdownHtml = '';
@@ -318,8 +329,8 @@
                              </div>`;
             });
             
-            if (alcTokens.length === 0) {
-                breakdownHtml = `<div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-4 py-2 border border-slate-800 rounded-xl bg-slate-800/30 w-full"><i class="fas fa-info-circle mr-2"></i> No ALC meals assigned by Security Desk today</div>`;
+            if (Object.keys(mealCounts).length === 0) {
+                breakdownHtml = `<div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-4 py-2 border border-slate-800 rounded-xl bg-slate-800/30 w-full"><i class="fas fa-info-circle mr-2"></i> No specific meals tracked today</div>`;
             }
             const breakdownContainer = document.getElementById('meal-breakdown-container');
             if (breakdownContainer) breakdownContainer.innerHTML = breakdownHtml;
@@ -344,22 +355,22 @@
 
             filteredTokens.forEach(log => {
                 const initial = String(log.empName || '?').charAt(0).toUpperCase();
-                const redeemedFlag = isRedeemed(log);
+                const isRedeemed = log.status === 'CONSUMED' || log.mealRedeemed === true;
                 
                 const mealLabel = log.mealName ? `<span class="text-[9px] uppercase font-bold text-orange-400 tracking-wider bg-orange-500/10 px-2 py-0.5 rounded ml-2 border border-orange-500/20">${log.mealName}</span>` : '';
                 const displayDept = log.dept || '-';
                 
                 let timeStr = 'Pending';
-                if (redeemedFlag && log.consumedAt) {
+                if (isRedeemed && log.consumedAt) {
                     timeStr = new Date(log.consumedAt.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
                 } else if (log.issuedAt) {
                     timeStr = new Date(log.issuedAt.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
                 }
 
-                const cardStyle = redeemedFlag ? 'bg-emerald-900/10 border-emerald-900/40' : 'bg-slate-800/50 border-slate-700/50 opacity-75';
-                const avatarStyle = redeemedFlag ? 'bg-emerald-900/30 text-emerald-400' : 'bg-slate-700 text-slate-400';
+                const cardStyle = isRedeemed ? 'bg-emerald-900/10 border-emerald-900/40' : 'bg-slate-800/50 border-slate-700/50 opacity-75';
+                const avatarStyle = isRedeemed ? 'bg-emerald-900/30 text-emerald-400' : 'bg-slate-700 text-slate-400';
                 
-                const statusBadge = redeemedFlag 
+                const statusBadge = isRedeemed 
                     ? `<div class="flex items-center gap-2 text-emerald-400 font-extrabold text-sm bg-emerald-900/30 px-3 py-2 rounded-xl border border-emerald-800/50 shadow-sm"><i class="fas fa-check-double"></i> <span>Redeemed</span></div>`
                     : `<div class="flex items-center gap-2 text-amber-400 font-extrabold text-sm bg-amber-900/30 px-3 py-2 rounded-xl border border-amber-800/50 shadow-sm"><i class="fas fa-clock"></i> <span>Waiting</span></div>`;
 
@@ -374,7 +385,7 @@
                                 <div class="text-xs text-slate-400 flex items-center mt-1 flex-wrap gap-2">
                                     <span class="font-mono bg-slate-700 px-1.5 py-0.5 rounded border border-slate-600 text-slate-200">${log.empId || '-'}</span>
                                     <span class="truncate">${displayDept}</span>
-                                    <span class="${redeemedFlag ? 'text-emerald-500' : 'text-slate-500'} ml-1"><i class="far fa-clock"></i> ${timeStr}</span>
+                                    <span class="${isRedeemed ? 'text-emerald-500' : 'text-slate-500'} ml-1"><i class="far fa-clock"></i> ${timeStr}</span>
                                     ${mealLabel}
                                 </div>
                             </div>
@@ -382,7 +393,7 @@
                         <div class="shrink-0 w-full sm:w-auto sm:pl-2 flex justify-end">
                             <div class="flex items-center gap-2">
                                 ${statusBadge}
-                                ${isAdmin && redeemedFlag ? `
+                                ${isAdmin && isRedeemed ? `
                                 <button onclick="reverseRedemption('${log.id}', '${String(log.empName || '').replace(/'/g, "\\'")}')" class="text-slate-400 hover:text-red-400 bg-slate-800 hover:bg-red-900/40 w-9 h-9 flex items-center justify-center rounded-xl transition-all shadow-sm border border-slate-700 hover:border-red-800/50" title="Reverse Redemption (Admin Only)">
                                     <i class="fas fa-undo"></i>
                                 </button>` : ''}
@@ -642,50 +653,30 @@
                 </div>
             </div>
 
-            <!-- THREE-Column Focus Metrics -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 shrink-0 max-w-4xl mx-auto w-full">
-                <!-- Security ALC Assignment Metric -->
-                <div class="bg-slate-800 p-5 rounded-2xl border border-indigo-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
-                    <div class="absolute -right-4 -top-4 w-20 h-20 bg-indigo-500/10 rounded-full pointer-events-none"></div>
-                    <div>
-                        <span class="text-indigo-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">ALC Meals Assigned Today</span>
-                        <div class="flex items-end gap-3">
-                            <span id="stat-issued-alc" class="text-4xl font-black text-indigo-400 drop-shadow-sm">0</span>
-                            <div class="mb-1.5 text-[10px] font-bold bg-indigo-900/50 px-2 py-0.5 rounded-md text-indigo-300 border border-indigo-800/50 shadow-sm">
-                                <span id="stat-redeemed-alc" class="text-emerald-400">0</span> Redeemed
-                            </div>
-                        </div>
-                    </div>
-                    <div class="w-12 h-12 bg-indigo-900/50 rounded-full flex items-center justify-center text-indigo-500 shadow-inner"><i class="fas fa-ticket-alt text-xl"></i></div>
-                </div>
-
-                <!-- KDC Meal Assign Today Metric -->
-                <div class="bg-slate-800 p-5 rounded-2xl border border-blue-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
-                    <div class="absolute -right-4 -top-4 w-20 h-20 bg-blue-500/10 rounded-full pointer-events-none"></div>
-                    <div>
-                        <span class="text-blue-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">KDC Meal Assign Today</span>
-                        <div class="flex items-end gap-3">
-                            <span id="stat-issued-kdc" class="text-4xl font-black text-blue-400 drop-shadow-sm">0</span>
-                            <div class="mb-1.5 text-[10px] font-bold bg-blue-900/50 px-2 py-0.5 rounded-md text-blue-300 border border-blue-800/50 shadow-sm">
-                                <span id="stat-redeemed-kdc" class="text-emerald-400">0</span> Redeemed
-                            </div>
-                        </div>
-                    </div>
-                    <div class="w-12 h-12 bg-blue-900/50 rounded-full flex items-center justify-center text-blue-500 shadow-inner"><i class="fas fa-boxes text-xl"></i></div>
-                </div>
-
+            <!-- Single Focus Metric: Total Redeemed -->
+            <div class="mb-6 shrink-0 max-w-4xl mx-auto w-full">
                 <!-- Total Redeemed Metric -->
                 <div class="bg-slate-800 p-5 rounded-2xl border border-emerald-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
-                    <div class="absolute -right-4 -top-4 w-20 h-20 bg-emerald-500/10 rounded-full pointer-events-none"></div>
+                    <div class="absolute -right-4 -top-4 w-32 h-32 bg-emerald-500/10 rounded-full pointer-events-none"></div>
                     <div>
-                        <span class="text-emerald-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">Total Meals Redeemed Today</span>
-                        <span id="stat-redeemed-emp" class="text-4xl font-black text-emerald-400 drop-shadow-sm">0</span>
+                        <span class="text-emerald-400 text-xs font-bold uppercase tracking-[0.2em] mb-1 block">Total Meals Redeemed Today</span>
+                        <span id="stat-redeemed-emp" class="text-5xl font-black text-emerald-400 drop-shadow-sm">0</span>
                     </div>
-                    <div class="w-12 h-12 bg-emerald-900/50 rounded-full flex items-center justify-center text-emerald-500 shadow-inner"><i class="fas fa-utensils text-xl"></i></div>
+                    <div class="w-16 h-16 bg-emerald-900/50 rounded-full flex items-center justify-center text-emerald-500 shadow-inner"><i class="fas fa-utensils text-2xl"></i></div>
                 </div>
             </div>
 
-            <!-- ALC Meal Breakdown / Scanned Counts -->
+            <!-- NEW: Site-Wise Scan Distribution (Replica of uploaded image) -->
+            <div class="mb-6 shrink-0 max-w-4xl mx-auto w-full mt-2">
+                <div class="flex items-center gap-2 mb-3 px-1 text-slate-400 font-bold text-[10px] tracking-widest uppercase">
+                    <i class="fas fa-map-marker-alt"></i> <span>Site-Wise Scan Distribution</span>
+                </div>
+                <div id="site-distribution-container" class="flex flex-wrap gap-3">
+                    <!-- Dynamic Site Boxes Injected Here -->
+                </div>
+            </div>
+
+            <!-- ALC Meal Breakdown Tracker -->
             <div class="mb-6 shrink-0 max-w-4xl mx-auto w-full">
                 <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2"><i class="fas fa-chart-pie mr-1"></i> ALC Meal Breakdown Tracker</h4>
                 <div id="meal-breakdown-container" class="flex flex-wrap gap-2 justify-center sm:justify-start">
@@ -714,7 +705,7 @@
         </div>
     </main>
 
-    <!-- VERIFICATION RESULT MODAL (Extended 5s notification for Meal Type) -->
+    <!-- VERIFICATION RESULT MODAL -->
     <div id="result-modal" class="fixed inset-0 hidden z-[70] flex items-end sm:items-center justify-center pointer-events-none p-4 backdrop-blur-sm bg-black/60 transition-opacity">
         <div class="bg-slate-800 w-full max-w-sm rounded-3xl shadow-2xl pointer-events-auto transform transition-all scale-100 overflow-hidden border border-slate-700 relative">
             <div id="res-bg" class="rounded-t-3xl p-8 text-center flex flex-col items-center relative overflow-hidden">
