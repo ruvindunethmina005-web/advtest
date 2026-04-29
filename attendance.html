@@ -55,7 +55,6 @@
         /* Scanner Focus Rings */
         .scanner-card { transition: all 0.3s ease; }
         .scanner-card.active-std { box-shadow: 0 0 0 2px #3b82f6, 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
-        .scanner-card.active-alc { box-shadow: 0 0 0 2px #6366f1, 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
     </style>
 
     <!-- Firebase SDKs -->
@@ -94,20 +93,20 @@
         let todayTokens = [];
         let WEEKLY_PRICES = { Monday: 80, Tuesday: 80, Wednesday: 80, Thursday: 80, Friday: 80, Saturday: 80, Sunday: 80 };
         let alcMealItems = {};
+        let pendingALCScan = null; // Holds user data while waiting for ALC meal selection
         
         const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
         let loggedInSysUser = null;
         
         // Scanning State
-        let activeInputId = 'std-scanner';
-        let scanDebounceTimers = { STD: null, ALC: null };
+        let activeInputId = 'main-scanner';
+        let scanDebounceTimer = null;
         let lastKeyTime = Date.now(); 
 
         // Individual Camera States
-        let scannerSTD = null;
-        let scannerALC = null;
-        let lastScanText = { STD: '', ALC: '' };
-        let lastScanTime = { STD: 0, ALC: 0 };
+        let scannerMain = null;
+        let lastScanText = '';
+        let lastScanTime = 0;
 
         // Loading states
         let isSysUsersLoaded = false;
@@ -185,7 +184,7 @@
             else if (type === 'error') { bgEl.className = "bg-gradient-to-br from-red-500 to-red-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
             else { bgEl.className = "bg-gradient-to-br from-blue-500 to-blue-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
             
-            if(title !== 'VERIFYING...') {
+            if(title !== 'VERIFYING...' && title !== 'PROCESSING...') {
                 setTimeout(() => modal.classList.add('hidden'), 2000); // 2 seconds auto close
             }
         };
@@ -215,7 +214,7 @@
                     document.getElementById('view-attendance').classList.remove('hidden');
                     
                     // Default focus
-                    window.setFocusTarget('std-scanner');
+                    window.setFocusTarget('main-scanner');
                     
                     initialRenderDone = true;
                 }
@@ -297,7 +296,7 @@
         };
 
         function updateAlcDropdown() {
-            const select = document.getElementById('alc-meal-select');
+            const select = document.getElementById('modal-alc-meal-select');
             if (!select) return;
             select.innerHTML = '<option value="" disabled selected>-- Select ALC Meal Variety --</option>';
             Object.entries(alcMealItems).sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, cost]) => {
@@ -309,17 +308,13 @@
         window.setFocusTarget = (id) => {
             activeInputId = id;
             
-            const stdCard = document.getElementById('card-std');
-            const alcCard = document.getElementById('card-alc');
-            
-            if(stdCard) stdCard.classList.remove('active-std');
-            if(alcCard) alcCard.classList.remove('active-alc');
+            const mainCard = document.getElementById('card-main');
+            if(mainCard) mainCard.classList.remove('active-std');
             
             const input = document.getElementById(id);
             if (input) {
                 input.focus();
-                if (id === 'std-scanner' && stdCard) stdCard.classList.add('active-std');
-                if (id === 'alc-scanner' && alcCard) alcCard.classList.add('active-alc');
+                if (id === 'main-scanner' && mainCard) mainCard.classList.add('active-std');
             }
         };
 
@@ -332,35 +327,20 @@
                 const activeEl = document.activeElement;
                 const activeTag = activeEl ? activeEl.tagName.toLowerCase() : '';
                 
-                // Allow interaction with other inputs/dropdowns
+                // Allow interaction with other inputs/dropdowns (like search or the ALC modal dropdown)
                 if ((activeTag === 'input' || activeTag === 'select') && activeEl.id !== activeInputId) return; 
 
-                // Do not force focus if any integrated camera is actively scanning (prevents mobile keyboard glitches)
-                const isCameraActive = scannerSTD !== null || scannerALC !== null;
+                // Do not force focus if any integrated camera is actively scanning or ALC modal is open
+                const isCameraActive = scannerMain !== null;
+                const isAlcModalOpen = !document.getElementById('alc-meal-modal').classList.contains('hidden');
 
-                if (isAttendanceView && !isCameraActive && document.activeElement !== el) {
+                if (isAttendanceView && !isCameraActive && !isAlcModalOpen && document.activeElement !== el) {
                     // Only refocus if the scanner block is actually visible
                     if (!el.parentElement.parentElement.classList.contains('hidden')) {
                         el.focus({ preventScroll: true });
                     }
                 }
             }, 100);
-        };
-
-        window.handleAlcSelection = () => {
-            const val = document.getElementById('alc-meal-select').value;
-            const scannerWrapper = document.getElementById('alc-scanner-wrapper');
-            const placeholder = document.getElementById('alc-placeholder');
-            
-            if (val) {
-                scannerWrapper.classList.remove('hidden');
-                placeholder.classList.add('hidden');
-                window.setFocusTarget('alc-scanner');
-            } else {
-                scannerWrapper.classList.add('hidden');
-                placeholder.classList.remove('hidden');
-                window.setFocusTarget('std-scanner');
-            }
         };
 
         // --------------------------------------------------------------------
@@ -462,7 +442,7 @@
         // --------------------------------------------------------------------
         // SCANNER LOGIC 
         // --------------------------------------------------------------------
-        window.executeScan = async (val, mode) => {
+        window.executeScan = async (val) => {
             if (!val || !auth.currentUser) return;
             
             showScanResultModal('VERIFYING...', 'Processing...', 'info');
@@ -498,26 +478,37 @@
                 return showScanResultModal('ACCESS DENIED', 'Invalid Terminal ID', 'error');
             }
 
-            const pId = emp.id || emp.empId; 
             const company = String(emp.companyName || emp.company || '').toUpperCase();
             
             const isAlcEmp = company.includes('ALC');
             const isStdEmp = company.includes('KDC') || company.includes('MOVEIT') || company.includes('VAS');
 
-            // --- Enforce Strict Company Rules Based on Scan Origin ---
-            if (mode === 'ALC' && !isAlcEmp) {
-                return showScanResultModal('RESTRICTED ACCESS', 'ALC Meal Assign is strictly restricted to ALC personnel only.', 'error');
-            }
-            if (mode === 'STD' && !isStdEmp) {
-                return showScanResultModal('RESTRICTED ACCESS', 'Standard Check-in is restricted to KDC, Moveit, & KDC Vas personnel only.', 'error');
+            if (!isAlcEmp && !isStdEmp) {
+                return showScanResultModal('RESTRICTED ACCESS', 'Unauthorized personnel company.', 'error');
             }
 
-            let mealName = null;
+            // --- Intelligent Routing based on Employee Company ---
+            if (isAlcEmp) {
+                // Route to ALC Meal Selection
+                document.getElementById('result-modal').classList.add('hidden'); // Hide verifying modal
+                pendingALCScan = emp;
+                document.getElementById('alc-emp-name-display').innerHTML = `Assigning meal for: <span class="font-bold text-white">${emp.name}</span>`;
+                document.getElementById('alc-meal-modal').classList.remove('hidden');
+                return; // Stop here and wait for modal confirmation
+            } else {
+                // Route to Standard Token Creation
+                await processTokenSave(emp, null);
+            }
+        };
+
+        // Executes the database saving once validation and routing is done
+        async function processTokenSave(emp, mealName) {
+            const todayStr = getTodayStr();
+            const pId = emp.id || emp.empId; 
+
             let appliedCost = 0;
 
-            if (mode === 'ALC') {
-                mealName = document.getElementById('alc-meal-select')?.value;
-                if (!mealName) return showScanResultModal('MISSING SELECTION', 'Please select an ALC meal variety.', 'warning');
+            if (mealName) {
                 appliedCost = parseFloat(alcMealItems[mealName]) || 0;
             } else {
                 const todayName = new Date().toLocaleDateString('en-US', {weekday: 'long'});
@@ -545,18 +536,12 @@
                     costs: { total: appliedCost }
                 };
 
-                if (mode === 'ALC' && mealName) {
+                if (mealName) {
                     payload.mealName = mealName;
                     payload.costApplied = appliedCost;
                 }
 
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), payload);
-                
-                if (mode === 'ALC') {
-                    // Reset ALC Selection to enforce manual choice next time
-                    document.getElementById('alc-meal-select').value = "";
-                    window.handleAlcSelection(); // Will hide ALC scanner and focus STD
-                }
                 
                 const mealMsg = mealName ? `\nAssigned: ${mealName}` : '';
                 showScanResultModal('ENTRY APPROVED', `${emp.name}${mealMsg}`, 'success');
@@ -564,9 +549,40 @@
                 console.error("Error:", e);
                 showScanResultModal('SYSTEM FAULT', 'Failed to record entry.', 'error');
             }
+        }
+
+        // --- ALC Modal Actions ---
+        window.confirmALCScan = async () => {
+            const mealSelect = document.getElementById('modal-alc-meal-select');
+            const mealName = mealSelect.value;
+            
+            if (!mealName) {
+                window.showToast("Please select a meal variety to proceed.", "error");
+                return;
+            }
+
+            document.getElementById('alc-meal-modal').classList.add('hidden');
+            
+            if (pendingALCScan) {
+                showScanResultModal('PROCESSING...', 'Saving assignment...', 'info');
+                await processTokenSave(pendingALCScan, mealName);
+                
+                // Cleanup
+                pendingALCScan = null;
+                mealSelect.value = ""; 
+            }
+            window.setFocusTarget('main-scanner');
         };
 
-        window.handleScannerInput = (event, mode) => {
+        window.cancelALCScan = () => {
+            pendingALCScan = null;
+            document.getElementById('modal-alc-meal-select').value = ""; 
+            document.getElementById('alc-meal-modal').classList.add('hidden');
+            window.setFocusTarget('main-scanner');
+        };
+
+        // --- Input Handling ---
+        window.handleScannerInput = (event) => {
             const currentTime = Date.now();
             if (currentTime - lastKeyTime > 60 && event.key !== 'Enter') {
                 event.target.value = '';
@@ -575,80 +591,72 @@
 
             if (event.key === 'Enter') {
                 event.preventDefault();
-                if(scanDebounceTimers[mode]) clearTimeout(scanDebounceTimers[mode]);
+                if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
                 
                 const val = event.target.value.trim().toUpperCase();
-                if (val.length >= 2) executeScan(val, mode);
+                if (val.length >= 2) executeScan(val);
                 
                 event.target.value = ''; 
             }
         };
         
-        window.handleAutoScan = (event, mode) => {
-            if(scanDebounceTimers[mode]) clearTimeout(scanDebounceTimers[mode]);
-            scanDebounceTimers[mode] = setTimeout(() => {
+        window.handleAutoScan = (event) => {
+            if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
+            scanDebounceTimer = setTimeout(() => {
                 const val = event.target.value.trim().toUpperCase();
                 if (val.length >= 2) { 
-                    executeScan(val, mode);
+                    executeScan(val);
                     event.target.value = ''; 
                 }
             }, 200);
         };
 
         // --- EMBEDDED CAMERA LOGIC ---
-        window.startCamera = (mode) => {
-            const readerId = mode === 'STD' ? 'reader-std' : 'reader-alc';
-            const btnStart = document.getElementById(`btn-start-cam-${mode.toLowerCase()}`);
-            const btnStop = document.getElementById(`btn-stop-cam-${mode.toLowerCase()}`);
-            const readerEl = document.getElementById(readerId);
+        window.startCamera = () => {
+            const btnStart = document.getElementById(`btn-start-cam`);
+            const btnStop = document.getElementById(`btn-stop-cam`);
+            const readerEl = document.getElementById('reader-main');
 
             readerEl.classList.remove('hidden');
             btnStart.classList.add('hidden');
             btnStop.classList.remove('hidden');
             
-            // Focus on relevant input to keep the UI logically aligned
-            window.setFocusTarget(mode === 'STD' ? 'std-scanner' : 'alc-scanner');
+            window.setFocusTarget('main-scanner');
 
-            const scanner = new Html5Qrcode(readerId);
-            if (mode === 'STD') scannerSTD = scanner;
-            else scannerALC = scanner;
+            scannerMain = new Html5Qrcode('reader-main');
 
-            scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } },
+            scannerMain.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } },
                 (decodedText) => { 
                     const now = Date.now();
                     // Debounce concurrent reads from camera (3-second pause per successful ID read)
-                    if (lastScanText[mode] === decodedText && (now - lastScanTime[mode]) < 3000) return;
-                    lastScanText[mode] = decodedText;
-                    lastScanTime[mode] = now;
+                    if (lastScanText === decodedText && (now - lastScanTime) < 3000) return;
+                    lastScanText = decodedText;
+                    lastScanTime = now;
                     
-                    executeScan(decodedText.trim().toUpperCase(), mode); 
+                    executeScan(decodedText.trim().toUpperCase()); 
                 },
                 () => {} // Ignore scan failures (happens every frame when no QR is present)
             ).catch(err => { 
                 showToast("Camera access restricted or unavailable", "error"); 
-                window.stopCamera(mode);
+                window.stopCamera();
             });
         };
         
-        window.stopCamera = (mode) => {
-            const readerId = mode === 'STD' ? 'reader-std' : 'reader-alc';
-            const btnStart = document.getElementById(`btn-start-cam-${mode.toLowerCase()}`);
-            const btnStop = document.getElementById(`btn-stop-cam-${mode.toLowerCase()}`);
-            const readerEl = document.getElementById(readerId);
+        window.stopCamera = () => {
+            const btnStart = document.getElementById(`btn-start-cam`);
+            const btnStop = document.getElementById(`btn-stop-cam`);
+            const readerEl = document.getElementById('reader-main');
 
-            if (mode === 'STD' && scannerSTD) {
-                scannerSTD.stop().catch(()=>{});
-                scannerSTD = null;
-            } else if (mode === 'ALC' && scannerALC) {
-                scannerALC.stop().catch(()=>{});
-                scannerALC = null;
+            if (scannerMain) {
+                scannerMain.stop().catch(()=>{});
+                scannerMain = null;
             }
 
             readerEl.classList.add('hidden');
             btnStart.classList.remove('hidden');
             btnStop.classList.add('hidden');
             
-            window.setFocusTarget(mode === 'STD' ? 'std-scanner' : 'alc-scanner');
+            window.setFocusTarget('main-scanner');
         };
 
         window.reviseAttendance = async (tokenId, empName, status) => {
@@ -747,97 +755,44 @@
             
             <div class="mb-6 shrink-0 text-center">
                 <h2 class="text-3xl font-extrabold text-white tracking-tight">
-                    Multi-Role Node Alpha
+                    Universal Check-in Node
                 </h2>
-                <p class="text-slate-400 mt-2 font-medium">Dual scanner configuration active. Utilize separate optical cameras or click an input field to route external hardware scanners.</p>
+                <p class="text-slate-400 mt-2 font-medium">Auto-routing scanner for KDC, Moveit, KDC VAS, and ALC Personnel.</p>
             </div>
 
-            <!-- DUAL SCANNER MODULES -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10 w-full max-w-6xl mx-auto shrink-0">
-                
-                <!-- 1. STANDARD CHECK-IN SCANNER -->
-                <div id="card-std" class="scanner-card bg-[#0f172a]/80 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-8 flex flex-col items-center relative overflow-hidden active-std cursor-pointer" onclick="setFocusTarget('std-scanner')">
+            <!-- UNIVERSAL SCANNER MODULE -->
+            <div class="mb-10 w-full max-w-2xl mx-auto shrink-0">
+                <div id="card-main" class="scanner-card bg-[#0f172a]/80 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-8 flex flex-col items-center relative overflow-hidden active-std cursor-pointer" onclick="setFocusTarget('main-scanner')">
                     <div class="absolute -top-10 -right-10 w-32 h-32 bg-blue-600/10 rounded-full blur-2xl pointer-events-none"></div>
                     <div class="flex items-center gap-3 mb-6">
                         <div class="bg-blue-500/20 p-3 rounded-xl border border-blue-500/30 text-blue-400">
-                            <i class="fas fa-user-check text-2xl"></i>
+                            <i class="fas fa-barcode text-2xl"></i>
                         </div>
                         <div>
-                            <h3 class="text-xl font-bold text-white tracking-tight">Standard Check-in</h3>
-                            <p class="text-xs text-blue-400 font-bold uppercase tracking-widest mt-1">KDC • Moveit • KDC Vas</p>
+                            <h3 class="text-xl font-bold text-white tracking-tight">System Scanner</h3>
+                            <p class="text-[10px] text-blue-400 font-bold uppercase tracking-widest mt-1">Accepts All Authorized Enterprise IDs</p>
                         </div>
                     </div>
 
-                    <div class="w-full relative max-w-md mb-4">
+                    <div class="w-full relative mb-4">
                         <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none">
                             <i class="fas fa-qrcode text-blue-500 text-xl transition-colors"></i>
                         </div>
-                        <input type="text" id="std-scanner" inputmode="none" placeholder="SCAN STD ID . . ." 
-                            class="w-full pl-16 pr-6 py-5 border-2 border-slate-700 focus:border-blue-500 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 font-mono text-center text-lg tracking-[0.2em] outline-none transition scanner-input text-white select-none cursor-text" 
-                            onkeydown="handleScannerInput(event, 'STD')" oninput="handleAutoScan(event, 'STD')" onfocus="setFocusTarget('std-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
+                        <input type="text" id="main-scanner" inputmode="none" placeholder="SCAN PERSONNEL ID . . ." 
+                            class="w-full pl-16 pr-6 py-5 sm:py-6 border-2 border-slate-700 focus:border-blue-500 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 font-mono text-center text-lg sm:text-2xl tracking-[0.2em] outline-none transition scanner-input text-white select-none cursor-text" 
+                            onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onfocus="setFocusTarget('main-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
                     </div>
                     
-                    <!-- Individual Embedded STD Camera -->
-                    <div id="reader-std" class="w-full max-w-md bg-black rounded-[1.5rem] overflow-hidden hidden mb-4 border-2 border-slate-700 min-h-[200px]"></div>
+                    <!-- Integrated Camera -->
+                    <div id="reader-main" class="w-full bg-black rounded-[1.5rem] overflow-hidden hidden mb-4 border-2 border-slate-700 min-h-[250px]"></div>
 
-                    <button id="btn-start-cam-std" onclick="startCamera('STD')" class="w-full max-w-md flex items-center justify-center text-blue-400 hover:text-white font-bold text-sm bg-blue-500/10 hover:bg-blue-600 border border-blue-500/30 px-6 py-3 rounded-xl transition shadow-sm">
-                        <i class="fas fa-camera text-lg mr-2"></i> Open Optical STD Scanner
+                    <button id="btn-start-cam" onclick="startCamera()" class="w-full flex items-center justify-center text-blue-400 hover:text-white font-bold text-sm bg-blue-500/10 hover:bg-blue-600 border border-blue-500/30 px-6 py-4 rounded-xl transition shadow-sm">
+                        <i class="fas fa-camera text-lg mr-2"></i> Launch Optical Scanner
                     </button>
-                    <button id="btn-stop-cam-std" onclick="stopCamera('STD')" class="hidden w-full max-w-md flex items-center justify-center text-red-400 hover:text-white font-bold text-sm bg-red-500/10 hover:bg-red-600 border border-red-500/30 px-6 py-3 rounded-xl transition shadow-sm">
-                        <i class="fas fa-times text-lg mr-2"></i> Close Optical STD Scanner
+                    <button id="btn-stop-cam" onclick="stopCamera()" class="hidden w-full flex items-center justify-center text-red-400 hover:text-white font-bold text-sm bg-red-500/10 hover:bg-red-600 border border-red-500/30 px-6 py-4 rounded-xl transition shadow-sm">
+                        <i class="fas fa-times text-lg mr-2"></i> Close Optical Scanner
                     </button>
                 </div>
-
-                <!-- 2. ALC MEAL ASSIGN SCANNER -->
-                <div id="card-alc" class="scanner-card bg-[#0f172a]/80 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-8 flex flex-col items-center relative overflow-hidden cursor-pointer" onclick="setFocusTarget('alc-scanner')">
-                    <div class="absolute -top-10 -left-10 w-32 h-32 bg-indigo-600/10 rounded-full blur-2xl pointer-events-none"></div>
-                    <div class="flex items-center gap-3 mb-6">
-                        <div class="bg-indigo-500/20 p-3 rounded-xl border border-indigo-500/30 text-indigo-400">
-                            <i class="fas fa-fish text-2xl"></i>
-                        </div>
-                        <div>
-                            <h3 class="text-xl font-bold text-white tracking-tight">ALC Meal Assign</h3>
-                            <p class="text-xs text-indigo-400 font-bold uppercase tracking-widest mt-1">ALC Personnel Only</p>
-                        </div>
-                    </div>
-
-                    <!-- Dropdown -->
-                    <div class="w-full max-w-md relative mb-5">
-                        <select id="alc-meal-select" class="w-full border-2 border-slate-700 bg-slate-900/50 rounded-2xl px-5 py-4 text-slate-200 focus:border-indigo-500 outline-none transition font-bold appearance-none cursor-pointer" onchange="handleAlcSelection()">
-                            <option value="" disabled selected>-- Select ALC Meal Variety --</option>
-                        </select>
-                        <div class="absolute right-5 top-4 pointer-events-none text-slate-400"><i class="fas fa-chevron-down"></i></div>
-                    </div>
-
-                    <!-- ALC Scanner Wrapper -->
-                    <div id="alc-scanner-wrapper" class="w-full flex flex-col items-center hidden max-w-md animate-fade-in">
-                        <div class="w-full relative mb-4">
-                            <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none">
-                                <i class="fas fa-qrcode text-indigo-500 text-xl transition-colors"></i>
-                            </div>
-                            <input type="text" id="alc-scanner" inputmode="none" placeholder="SCAN ALC ID . . ." 
-                                class="w-full pl-16 pr-6 py-5 border-2 border-slate-700 focus:border-indigo-500 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 font-mono text-center text-lg tracking-[0.2em] outline-none transition scanner-input text-white select-none cursor-text" 
-                                onkeydown="handleScannerInput(event, 'ALC')" oninput="handleAutoScan(event, 'ALC')" onfocus="setFocusTarget('alc-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
-                        </div>
-
-                        <!-- Individual Embedded ALC Camera -->
-                        <div id="reader-alc" class="w-full bg-black rounded-[1.5rem] overflow-hidden hidden mb-4 border-2 border-slate-700 min-h-[200px]"></div>
-
-                        <button id="btn-start-cam-alc" onclick="startCamera('ALC')" class="w-full flex items-center justify-center text-indigo-400 hover:text-white font-bold text-sm bg-indigo-500/10 hover:bg-indigo-600 border border-indigo-500/30 px-6 py-3 rounded-xl transition shadow-sm">
-                            <i class="fas fa-camera text-lg mr-2"></i> Open Optical ALC Scanner
-                        </button>
-                        <button id="btn-stop-cam-alc" onclick="stopCamera('ALC')" class="hidden w-full flex items-center justify-center text-red-400 hover:text-white font-bold text-sm bg-red-500/10 hover:bg-red-600 border border-red-500/30 px-6 py-3 rounded-xl transition shadow-sm">
-                            <i class="fas fa-times text-lg mr-2"></i> Close Optical ALC Scanner
-                        </button>
-                    </div>
-
-                    <!-- Placeholder text shown when scanner is hidden -->
-                    <div id="alc-placeholder" class="text-center py-6 text-slate-500 animate-fade-in">
-                        <i class="fas fa-hand-pointer text-3xl mb-3 opacity-50"></i>
-                        <p class="text-sm font-bold">Select an ALC meal above to unlock scanner.</p>
-                    </div>
-                </div>
-
             </div>
 
             <!-- Single Focus Metric -->
@@ -853,15 +808,15 @@
             </div>
 
             <!-- Site-wise Scanned Counts -->
-            <div class="mb-6 shrink-0 max-w-6xl mx-auto w-full">
+            <div class="mb-6 shrink-0 max-w-4xl mx-auto w-full">
                 <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2"><i class="fas fa-map-marker-alt mr-1"></i> Site-Wise Scan Distribution</h4>
-                <div id="site-wise-container" class="flex flex-wrap gap-2">
+                <div id="site-wise-container" class="flex flex-wrap gap-2 justify-center sm:justify-start">
                     <!-- Dynamic Site Counts Injected Here -->
                 </div>
             </div>
 
             <!-- List Area Header -->
-            <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4 mt-6 max-w-6xl mx-auto w-full">
+            <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4 mt-6 max-w-4xl mx-auto w-full">
                 <h3 class="text-base font-bold text-white"><i class="fas fa-list-ul mr-2 text-slate-400"></i> Issued Tokens Ledger</h3>
                 <div class="w-full md:w-80">
                     <div class="bg-slate-800 px-4 py-2.5 rounded-xl border border-slate-700 shadow-sm flex items-center gap-3 w-full transition-shadow focus-within:ring-2 focus-within:ring-blue-500/50">
@@ -872,7 +827,7 @@
             </div>
 
             <!-- Expanding List Area -->
-            <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col flex-1 min-h-[400px] max-w-6xl mx-auto w-full">
+            <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col flex-1 min-h-[400px] max-w-4xl mx-auto w-full">
                 <div class="p-4 flex-grow" id="attendance-list">
                     <!-- Data populated reactively via JavaScript -->
                 </div>
@@ -891,6 +846,36 @@
             <div class="p-8 text-center bg-slate-900/50">
                 <p id="res-msg" class="text-white font-bold text-xl leading-relaxed whitespace-pre-line"></p>
                 <button onclick="document.getElementById('result-modal').classList.add('hidden')" class="mt-8 w-full py-3.5 bg-slate-800 border border-slate-600 hover:bg-slate-700 text-white font-bold rounded-xl transition shadow-sm text-sm uppercase tracking-wider">Acknowledge</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ALC MEAL SELECTION MODAL (Triggered only when ALC employee scans) -->
+    <div id="alc-meal-modal" class="fixed inset-0 hidden z-[75] flex items-center justify-center p-4 backdrop-blur-md bg-black/60 pointer-events-auto transition-opacity">
+        <div class="bg-[#131B2B] w-full max-w-md rounded-[2rem] shadow-2xl border border-indigo-500/30 overflow-hidden relative">
+            <div class="absolute -top-10 -right-10 w-40 h-40 bg-indigo-600/20 rounded-full blur-3xl pointer-events-none"></div>
+            
+            <div class="p-8">
+                <div class="flex items-center gap-3 mb-2">
+                    <div class="bg-indigo-500/20 p-2.5 rounded-xl text-indigo-400">
+                        <i class="fas fa-fish text-xl"></i>
+                    </div>
+                    <h3 class="text-xl font-extrabold text-white tracking-tight">ALC Meal Required</h3>
+                </div>
+                <p id="alc-emp-name-display" class="text-slate-400 mb-6 text-sm"></p>
+                
+                <div class="relative mb-8">
+                    <select id="modal-alc-meal-select" class="w-full border-2 border-slate-700 bg-slate-900 rounded-xl px-5 py-4 text-white focus:ring-4 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition font-bold appearance-none cursor-pointer shadow-inner">
+                        <option value="" disabled selected>-- Select Variety --</option>
+                        <!-- Dynamic Options injected here -->
+                    </select>
+                    <div class="absolute right-5 top-5 pointer-events-none text-slate-400"><i class="fas fa-chevron-down"></i></div>
+                </div>
+
+                <div class="flex gap-4">
+                    <button onclick="cancelALCScan()" class="flex-1 py-3.5 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-white rounded-xl font-bold uppercase text-sm tracking-wider transition-colors shadow-sm">Cancel</button>
+                    <button onclick="confirmALCScan()" class="flex-1 py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold uppercase text-sm tracking-wider transition-colors shadow-[0_0_15px_rgba(79,70,229,0.4)]">Confirm Issue</button>
+                </div>
             </div>
         </div>
     </div>
