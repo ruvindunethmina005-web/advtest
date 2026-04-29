@@ -61,13 +61,13 @@
 
         // Firebase Config
         let firebaseConfig = {
-            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-            appId: import.meta.env.VITE_FIREBASE_APP_ID,
-            measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+            apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || "",
+            authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || "",
+            projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || "",
+            storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || "",
+            messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+            appId: import.meta.env?.VITE_FIREBASE_APP_ID || "",
+            measurementId: import.meta.env?.VITE_FIREBASE_MEASUREMENT_ID || ""
         };
 
         try {
@@ -176,7 +176,7 @@
             else { bgEl.className = "bg-gradient-to-br from-blue-500 to-blue-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
             
             if(title !== 'VERIFYING...') {
-                setTimeout(() => modal.classList.add('hidden'), 1200);
+                setTimeout(() => modal.classList.add('hidden'), 1500); // 1.5 seconds auto close
             }
         };
 
@@ -236,7 +236,7 @@
             if (!auth.currentUser) return;
             const todayStr = getTodayStr();
 
-            // 1. Single Point User Check (Massively boosts speed vs downloading all users)
+            // 1. Single Point User Check
             if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
                 const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_users', loggedInSysUser.username);
                 onSnapshot(userRef, (docSnap) => {
@@ -266,7 +266,7 @@
                 isAlcLoaded = true; checkDataLoaded();
             }, (err) => console.error("ALC settings fetch error:", err));
 
-            // 4. Load ONLY Today's Tokens (Cuts download size by 99.9%)
+            // 4. Load ONLY Today's Tokens
             const qTokens = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), where('issuedDate', '==', todayStr));
             onSnapshot(qTokens, (snap) => {
                 todayTokens = [];
@@ -279,15 +279,12 @@
                 
                 if (initialRenderDone) {
                     window.renderLedger();
-                    triggerSyncAnimation(); // Fire UI feedback that tokens updated
+                    triggerSyncAnimation();
                 }
             }, (err) => {
                 console.error("Tokens fetch error:", err);
                 showToast("Failed to sync tokens.", "error");
             });
-            
-            // NOTE: Employees collection is intentionally NOT loaded here to achieve zero-lag boot times.
-            // Employee data is fetched on-the-fly dynamically during the exact moment of scanning.
         };
 
         function updateAlcDropdown() {
@@ -359,7 +356,7 @@
             const role = loggedInSysUser?.role || 'USER';
             const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
 
-            // Metrics - Token count logic matching UI
+            // Metrics
             document.getElementById('stat-cleared-emp').innerText = todayTokens.length;
 
             // Site Tally
@@ -382,7 +379,7 @@
             const siteContainer = document.getElementById('site-wise-container');
             if (siteContainer) siteContainer.innerHTML = siteHtml;
 
-            // Render Scanned (Issued) Ledger List
+            // Render Ledger List
             let html = '';
             
             let filteredTokens = todayTokens.filter(t => {
@@ -393,7 +390,6 @@
                 return tName.includes(term) || tId.includes(term) || tDept.includes(term);
             });
 
-            // Sort: Latest scans at the top
             filteredTokens.sort((a, b) => {
                 const timeA = a.issuedAt?.seconds || 0;
                 const timeB = b.issuedAt?.seconds || 0;
@@ -447,7 +443,7 @@
         window.filterAttendance = () => window.renderLedger();
 
         // --------------------------------------------------------------------
-        // SCANNER LOGIC (Speed Trap & Dynamic User Fetch)
+        // SCANNER LOGIC 
         // --------------------------------------------------------------------
         window.executeScan = async (val) => {
             if (!val || !auth.currentUser) return;
@@ -461,16 +457,14 @@
                 return showScanResultModal('ALREADY ACTIVE', `${alreadyMarked.empName} has already accessed.`, 'warning');
             }
 
-            // DYNAMIC FETCH: Pull the specific user directly from Firebase instead of holding 5000 users in memory
+            // DYNAMIC FETCH: Pull specific user directly
             let emp = null;
             try {
-                // Try direct doc ID lookup first for speed
                 const empRef = doc(db, 'artifacts', appId, 'public', 'data', 'employees', val);
                 const empSnap = await getDoc(empRef);
                 if (empSnap.exists()) {
                     emp = { id: empSnap.id, ...empSnap.data() };
                 } else {
-                    // Fallback query by empId field
                     const empQ = query(collection(db, 'artifacts', appId, 'public', 'data', 'employees'), where('empId', '==', val), limit(1));
                     const qs = await getDocs(empQ);
                     if (!qs.empty) {
@@ -490,14 +484,16 @@
 
             const pId = emp.id || emp.empId; 
             const company = String(emp.companyName || emp.company || '').toUpperCase();
+            
             const isAlcEmp = company.includes('ALC');
+            const isStdEmp = company.includes('KDC') || company.includes('MOVEIT') || company.includes('VAS');
 
-            // --- Enforce Strict ALC Rules ---
+            // --- Enforce Strict Company Rules Based on Selected Mode ---
             if (scanMode === 'ALC' && !isAlcEmp) {
-                return showScanResultModal('MODE CONFLICT', 'Standard personnel must use Standard Check-in.', 'warning');
+                return showScanResultModal('RESTRICTED ACCESS', 'ALC Meal Assign is strictly restricted to ALC personnel only.', 'warning');
             }
-            if (scanMode === 'STD' && isAlcEmp) {
-                return showScanResultModal('MODE CONFLICT', 'ALC personnel require meal selection. Switch to ALC Menu.', 'warning');
+            if (scanMode === 'STD' && !isStdEmp) {
+                return showScanResultModal('RESTRICTED ACCESS', 'Standard Check-in is restricted to KDC, Moveit, & KDC Vas personnel only.', 'warning');
             }
 
             let mealName = null;
@@ -561,8 +557,6 @@
         window.handleScannerInput = (event) => {
             const currentTime = Date.now();
             
-            // If it has been more than 60ms since the last keypress (and it's not the Enter key)
-            // It means a human is typing manually. We instantly clear the field.
             if (currentTime - lastKeyTime > 60 && event.key !== 'Enter') {
                 event.target.value = '';
             }
@@ -587,7 +581,7 @@
                     executeScan(val);
                     event.target.value = ''; 
                 }
-            }, 200); // 200ms debounce for scanners that don't send Enter key
+            }, 200);
         };
 
         window.keepFocus = (elementId) => {
@@ -599,7 +593,6 @@
                 const activeEl = document.activeElement;
                 const activeTag = activeEl ? activeEl.tagName.toLowerCase() : '';
                 
-                // Do not steal focus if user is actively searching or using dropdown
                 if ((activeTag === 'input' || activeTag === 'select') && activeEl.id !== elementId) return; 
 
                 const isCameraActive = !document.getElementById('webcam-modal').classList.contains('hidden');
