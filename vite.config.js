@@ -1,10 +1,15 @@
 import { defineConfig } from 'vite';
-import { resolve } from 'path';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+// FIX 1: Safely define __dirname for ES Modules (Vite's default)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export default defineConfig({
-  // CRITICAL FIX: Ensures all links and assets use relative paths.
-  // This prevents 404 errors when deployed to GitHub Pages or sub-folders.
-  base: './', 
+  // FIX 2: Updated for Netlify
+  // Netlify serves from the root domain, not a sub-folder like GitHub pages.
+  base: '/', 
   
   build: {
     rollupOptions: {
