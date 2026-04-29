@@ -283,7 +283,7 @@
             const redeemedTokens = todayTokens.filter(t => t.status === 'CONSUMED' || t.mealRedeemed === true);
             document.getElementById('stat-redeemed-emp').innerText = redeemedTokens.length;
 
-            // --- Site-Wise Scan Distribution Calculation ---
+            // --- Site-Wise Scan Redeemed Calculation ---
             const siteCounts = {};
             redeemedTokens.forEach(t => {
                 // Determine site logic. Adjust based on your schema structure.
@@ -666,10 +666,10 @@
                 </div>
             </div>
 
-            <!-- NEW: Site-Wise Scan Distribution (Replica of uploaded image) -->
+            <!-- NEW: Site-Wise Redeemed Distribution (Replica of uploaded image) -->
             <div class="mb-6 shrink-0 max-w-4xl mx-auto w-full mt-2">
                 <div class="flex items-center gap-2 mb-3 px-1 text-slate-400 font-bold text-[10px] tracking-widest uppercase">
-                    <i class="fas fa-map-marker-alt"></i> <span>Site-Wise Scan Distribution</span>
+                    <i class="fas fa-map-marker-alt"></i> <span>Site-Wise Redeemed Distribution</span>
                 </div>
                 <div id="site-distribution-container" class="flex flex-wrap gap-3">
                     <!-- Dynamic Site Boxes Injected Here -->
