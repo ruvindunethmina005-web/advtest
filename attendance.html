@@ -100,12 +100,16 @@
         
         // Scanning State
         let activeInputId = 'std-scanner';
-        let activeWebcamMode = null;
-        let html5QrcodeScanner = null;
         let scanDebounceTimers = { STD: null, ALC: null };
-        let lastKeyTime = Date.now(); // For blocking manual typing
+        let lastKeyTime = Date.now(); 
 
-        // Loading states to ensure all data arrives before rendering
+        // Individual Camera States
+        let scannerSTD = null;
+        let scannerALC = null;
+        let lastScanText = { STD: '', ALC: '' };
+        let lastScanTime = { STD: 0, ALC: 0 };
+
+        // Loading states
         let isSysUsersLoaded = false;
         let isTokensLoaded = false;
         let isPricesLoaded = false;
@@ -328,13 +332,14 @@
                 const activeEl = document.activeElement;
                 const activeTag = activeEl ? activeEl.tagName.toLowerCase() : '';
                 
-                // Allow interaction with other inputs/dropdowns (like search or meal select)
+                // Allow interaction with other inputs/dropdowns
                 if ((activeTag === 'input' || activeTag === 'select') && activeEl.id !== activeInputId) return; 
 
-                const isCameraActive = !document.getElementById('webcam-modal').classList.contains('hidden');
+                // Do not force focus if any integrated camera is actively scanning (prevents mobile keyboard glitches)
+                const isCameraActive = scannerSTD !== null || scannerALC !== null;
 
                 if (isAttendanceView && !isCameraActive && document.activeElement !== el) {
-                    // Only refocus if the scanner is actually visible
+                    // Only refocus if the scanner block is actually visible
                     if (!el.parentElement.parentElement.classList.contains('hidden')) {
                         el.focus({ preventScroll: true });
                     }
@@ -501,10 +506,10 @@
 
             // --- Enforce Strict Company Rules Based on Scan Origin ---
             if (mode === 'ALC' && !isAlcEmp) {
-                return showScanResultModal('RESTRICTED ACCESS', 'ALC Meal Assign is restricted to KDC, Moveit, & KDC Vas personnel only.', 'warning');
+                return showScanResultModal('RESTRICTED ACCESS', 'ALC Meal Assign is strictly restricted to ALC personnel only.', 'error');
             }
             if (mode === 'STD' && !isStdEmp) {
-                return showScanResultModal('RESTRICTED ACCESS', 'Standard Check-in is strictly restricted to ALC personnel only.', 'warning');
+                return showScanResultModal('RESTRICTED ACCESS', 'Standard Check-in is restricted to KDC, Moveit, & KDC Vas personnel only.', 'error');
             }
 
             let mealName = null;
@@ -590,35 +595,60 @@
             }, 200);
         };
 
-        window.startWebcamScanner = (mode) => {
-            activeWebcamMode = mode;
-            const modalTitle = document.getElementById('webcam-title');
-            const icon = mode === 'STD' ? 'fa-user-check' : 'fa-fish';
-            const color = mode === 'STD' ? 'text-blue-500' : 'text-indigo-500';
-            const label = mode === 'STD' ? 'Standard Scanner Feed' : 'ALC Scanner Feed';
+        // --- EMBEDDED CAMERA LOGIC ---
+        window.startCamera = (mode) => {
+            const readerId = mode === 'STD' ? 'reader-std' : 'reader-alc';
+            const btnStart = document.getElementById(`btn-start-cam-${mode.toLowerCase()}`);
+            const btnStop = document.getElementById(`btn-stop-cam-${mode.toLowerCase()}`);
+            const readerEl = document.getElementById(readerId);
+
+            readerEl.classList.remove('hidden');
+            btnStart.classList.add('hidden');
+            btnStop.classList.remove('hidden');
             
-            modalTitle.innerHTML = `<i class="fas ${icon} mr-3 ${color}"></i> ${label}`;
-            document.getElementById('webcam-modal').classList.remove('hidden');
-            
-            if (!html5QrcodeScanner) html5QrcodeScanner = new Html5Qrcode("reader");
-            html5QrcodeScanner.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } },
+            // Focus on relevant input to keep the UI logically aligned
+            window.setFocusTarget(mode === 'STD' ? 'std-scanner' : 'alc-scanner');
+
+            const scanner = new Html5Qrcode(readerId);
+            if (mode === 'STD') scannerSTD = scanner;
+            else scannerALC = scanner;
+
+            scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } },
                 (decodedText) => { 
-                    stopWebcamScanner(); 
-                    executeScan(decodedText.trim().toUpperCase(), activeWebcamMode); 
+                    const now = Date.now();
+                    // Debounce concurrent reads from camera (3-second pause per successful ID read)
+                    if (lastScanText[mode] === decodedText && (now - lastScanTime[mode]) < 3000) return;
+                    lastScanText[mode] = decodedText;
+                    lastScanTime[mode] = now;
+                    
+                    executeScan(decodedText.trim().toUpperCase(), mode); 
                 },
-                () => {}
+                () => {} // Ignore scan failures (happens every frame when no QR is present)
             ).catch(err => { 
                 showToast("Camera access restricted or unavailable", "error"); 
-                document.getElementById('webcam-modal').classList.add('hidden'); 
+                window.stopCamera(mode);
             });
         };
         
-        window.stopWebcamScanner = () => {
-            document.getElementById('webcam-modal').classList.add('hidden');
-            if(html5QrcodeScanner) html5QrcodeScanner.stop().catch(()=>{});
+        window.stopCamera = (mode) => {
+            const readerId = mode === 'STD' ? 'reader-std' : 'reader-alc';
+            const btnStart = document.getElementById(`btn-start-cam-${mode.toLowerCase()}`);
+            const btnStop = document.getElementById(`btn-stop-cam-${mode.toLowerCase()}`);
+            const readerEl = document.getElementById(readerId);
+
+            if (mode === 'STD' && scannerSTD) {
+                scannerSTD.stop().catch(()=>{});
+                scannerSTD = null;
+            } else if (mode === 'ALC' && scannerALC) {
+                scannerALC.stop().catch(()=>{});
+                scannerALC = null;
+            }
+
+            readerEl.classList.add('hidden');
+            btnStart.classList.remove('hidden');
+            btnStop.classList.add('hidden');
             
-            if (activeWebcamMode === 'STD') window.setFocusTarget('std-scanner');
-            else if (activeWebcamMode === 'ALC') window.setFocusTarget('alc-scanner');
+            window.setFocusTarget(mode === 'STD' ? 'std-scanner' : 'alc-scanner');
         };
 
         window.reviseAttendance = async (tokenId, empName, status) => {
@@ -719,7 +749,7 @@
                 <h2 class="text-3xl font-extrabold text-white tracking-tight">
                     Multi-Role Node Alpha
                 </h2>
-                <p class="text-slate-400 mt-2 font-medium">Dual scanner configuration active. Click an input field to route external physical scanners.</p>
+                <p class="text-slate-400 mt-2 font-medium">Dual scanner configuration active. Utilize separate optical cameras or click an input field to route external hardware scanners.</p>
             </div>
 
             <!-- DUAL SCANNER MODULES -->
@@ -738,7 +768,7 @@
                         </div>
                     </div>
 
-                    <div class="w-full relative max-w-md">
+                    <div class="w-full relative max-w-md mb-4">
                         <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none">
                             <i class="fas fa-qrcode text-blue-500 text-xl transition-colors"></i>
                         </div>
@@ -747,8 +777,14 @@
                             onkeydown="handleScannerInput(event, 'STD')" oninput="handleAutoScan(event, 'STD')" onfocus="setFocusTarget('std-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
                     </div>
                     
-                    <button onclick="startWebcamScanner('STD')" class="mt-6 w-full max-w-md flex items-center justify-center text-blue-400 hover:text-white font-bold text-sm bg-blue-500/10 hover:bg-blue-600 border border-blue-500/30 px-6 py-3 rounded-xl transition shadow-sm">
-                        <i class="fas fa-camera text-lg mr-2"></i> Optical STD Scanner
+                    <!-- Individual Embedded STD Camera -->
+                    <div id="reader-std" class="w-full max-w-md bg-black rounded-[1.5rem] overflow-hidden hidden mb-4 border-2 border-slate-700 min-h-[200px]"></div>
+
+                    <button id="btn-start-cam-std" onclick="startCamera('STD')" class="w-full max-w-md flex items-center justify-center text-blue-400 hover:text-white font-bold text-sm bg-blue-500/10 hover:bg-blue-600 border border-blue-500/30 px-6 py-3 rounded-xl transition shadow-sm">
+                        <i class="fas fa-camera text-lg mr-2"></i> Open Optical STD Scanner
+                    </button>
+                    <button id="btn-stop-cam-std" onclick="stopCamera('STD')" class="hidden w-full max-w-md flex items-center justify-center text-red-400 hover:text-white font-bold text-sm bg-red-500/10 hover:bg-red-600 border border-red-500/30 px-6 py-3 rounded-xl transition shadow-sm">
+                        <i class="fas fa-times text-lg mr-2"></i> Close Optical STD Scanner
                     </button>
                 </div>
 
@@ -773,9 +809,9 @@
                         <div class="absolute right-5 top-4 pointer-events-none text-slate-400"><i class="fas fa-chevron-down"></i></div>
                     </div>
 
-                    <!-- Hidden Scanner Input -->
+                    <!-- ALC Scanner Wrapper -->
                     <div id="alc-scanner-wrapper" class="w-full flex flex-col items-center hidden max-w-md animate-fade-in">
-                        <div class="w-full relative">
+                        <div class="w-full relative mb-4">
                             <div class="absolute inset-y-0 left-6 flex items-center pointer-events-none">
                                 <i class="fas fa-qrcode text-indigo-500 text-xl transition-colors"></i>
                             </div>
@@ -783,8 +819,15 @@
                                 class="w-full pl-16 pr-6 py-5 border-2 border-slate-700 focus:border-indigo-500 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 font-mono text-center text-lg tracking-[0.2em] outline-none transition scanner-input text-white select-none cursor-text" 
                                 onkeydown="handleScannerInput(event, 'ALC')" oninput="handleAutoScan(event, 'ALC')" onfocus="setFocusTarget('alc-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
                         </div>
-                        <button onclick="startWebcamScanner('ALC')" class="mt-6 w-full flex items-center justify-center text-indigo-400 hover:text-white font-bold text-sm bg-indigo-500/10 hover:bg-indigo-600 border border-indigo-500/30 px-6 py-3 rounded-xl transition shadow-sm">
-                            <i class="fas fa-camera text-lg mr-2"></i> Optical ALC Scanner
+
+                        <!-- Individual Embedded ALC Camera -->
+                        <div id="reader-alc" class="w-full bg-black rounded-[1.5rem] overflow-hidden hidden mb-4 border-2 border-slate-700 min-h-[200px]"></div>
+
+                        <button id="btn-start-cam-alc" onclick="startCamera('ALC')" class="w-full flex items-center justify-center text-indigo-400 hover:text-white font-bold text-sm bg-indigo-500/10 hover:bg-indigo-600 border border-indigo-500/30 px-6 py-3 rounded-xl transition shadow-sm">
+                            <i class="fas fa-camera text-lg mr-2"></i> Open Optical ALC Scanner
+                        </button>
+                        <button id="btn-stop-cam-alc" onclick="stopCamera('ALC')" class="hidden w-full flex items-center justify-center text-red-400 hover:text-white font-bold text-sm bg-red-500/10 hover:bg-red-600 border border-red-500/30 px-6 py-3 rounded-xl transition shadow-sm">
+                            <i class="fas fa-times text-lg mr-2"></i> Close Optical ALC Scanner
                         </button>
                     </div>
 
@@ -849,18 +892,6 @@
                 <p id="res-msg" class="text-white font-bold text-xl leading-relaxed whitespace-pre-line"></p>
                 <button onclick="document.getElementById('result-modal').classList.add('hidden')" class="mt-8 w-full py-3.5 bg-slate-800 border border-slate-600 hover:bg-slate-700 text-white font-bold rounded-xl transition shadow-sm text-sm uppercase tracking-wider">Acknowledge</button>
             </div>
-        </div>
-    </div>
-
-    <!-- WEBCAM MODAL -->
-    <div id="webcam-modal" class="fixed inset-0 bg-[#0B1120]/95 hidden z-[80] flex flex-col items-center justify-center p-4 backdrop-blur-sm">
-        <div class="bg-[#131B2B] rounded-3xl overflow-hidden w-full max-w-md relative shadow-2xl border border-slate-800">
-            <div class="bg-[#1F2937] text-white p-5 flex justify-between items-center border-b border-slate-700">
-                <span id="webcam-title" class="font-bold flex items-center text-sm uppercase tracking-wider"><i class="fas fa-video mr-3 text-blue-500"></i> Optical Feed Active</span>
-                <button onclick="stopWebcamScanner()" class="text-slate-400 hover:text-white bg-slate-800 hover:bg-red-500 rounded-lg p-2 transition"><i class="fas fa-times"></i></button>
-            </div>
-            <div id="reader" class="w-full bg-[#0B1120] min-h-[350px]"></div>
-            <div class="p-5 text-center text-xs font-bold uppercase tracking-widest text-slate-400 bg-[#1F2937] border-t border-slate-700">Awaiting QR / Barcode Interface...</div>
         </div>
     </div>
 
