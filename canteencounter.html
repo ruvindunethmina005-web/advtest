@@ -285,8 +285,17 @@
             
             const redeemedTokens = todayTokens.filter(t => t.status === 'CONSUMED' || t.mealRedeemed === true);
             
+            const alcRedeemed = alcTokens.filter(t => t.status === 'CONSUMED' || t.mealRedeemed === true).length;
+            const kdcRedeemed = kdcTokens.filter(t => t.status === 'CONSUMED' || t.mealRedeemed === true).length;
+
             document.getElementById('stat-issued-alc').innerText = alcTokens.length;
+            const elRedeemedAlc = document.getElementById('stat-redeemed-alc');
+            if(elRedeemedAlc) elRedeemedAlc.innerText = alcRedeemed;
+
             document.getElementById('stat-issued-kdc').innerText = kdcTokens.length;
+            const elRedeemedKdc = document.getElementById('stat-redeemed-kdc');
+            if(elRedeemedKdc) elRedeemedKdc.innerText = kdcRedeemed;
+
             document.getElementById('stat-redeemed-emp').innerText = redeemedTokens.length;
 
             // --- Meal Breakdown Calculation ---
@@ -637,7 +646,12 @@
                     <div class="absolute -right-4 -top-4 w-20 h-20 bg-indigo-500/10 rounded-full pointer-events-none"></div>
                     <div>
                         <span class="text-indigo-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">ALC Meals Assigned Today</span>
-                        <span id="stat-issued-alc" class="text-4xl font-black text-indigo-400 drop-shadow-sm">0</span>
+                        <div class="flex items-end gap-3">
+                            <span id="stat-issued-alc" class="text-4xl font-black text-indigo-400 drop-shadow-sm">0</span>
+                            <div class="mb-1.5 text-[10px] font-bold bg-indigo-900/50 px-2 py-0.5 rounded-md text-indigo-300 border border-indigo-800/50 shadow-sm">
+                                <span id="stat-redeemed-alc" class="text-emerald-400">0</span> Redeemed
+                            </div>
+                        </div>
                     </div>
                     <div class="w-12 h-12 bg-indigo-900/50 rounded-full flex items-center justify-center text-indigo-500 shadow-inner"><i class="fas fa-ticket-alt text-xl"></i></div>
                 </div>
@@ -647,7 +661,12 @@
                     <div class="absolute -right-4 -top-4 w-20 h-20 bg-blue-500/10 rounded-full pointer-events-none"></div>
                     <div>
                         <span class="text-blue-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">KDC Meal Assign Today</span>
-                        <span id="stat-issued-kdc" class="text-4xl font-black text-blue-400 drop-shadow-sm">0</span>
+                        <div class="flex items-end gap-3">
+                            <span id="stat-issued-kdc" class="text-4xl font-black text-blue-400 drop-shadow-sm">0</span>
+                            <div class="mb-1.5 text-[10px] font-bold bg-blue-900/50 px-2 py-0.5 rounded-md text-blue-300 border border-blue-800/50 shadow-sm">
+                                <span id="stat-redeemed-kdc" class="text-emerald-400">0</span> Redeemed
+                            </div>
+                        </div>
                     </div>
                     <div class="w-12 h-12 bg-blue-900/50 rounded-full flex items-center justify-center text-blue-500 shadow-inner"><i class="fas fa-boxes text-xl"></i></div>
                 </div>
