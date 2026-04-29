@@ -10,9 +10,10 @@ export default defineConfig({
     rollupOptions: {
       input: {
         // Main Dashboard
-        main: resolve(__dirname, 'index.html'),
+        <a href="index.html">Main</a>,
         
         // Individual Enterprise Modules
+        <a href="attendance.html">attendance</a>,
         attendance: resolve(__dirname, 'attendance.html'),
         canteencounter: resolve(__dirname, 'canteencounter.html'),
         mealplan: resolve(__dirname, 'mealplan.html'),
