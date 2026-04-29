@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enterprise | Personnel Roster</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { slate: { 850: '#152033' } },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- QR Code Libs (Print only) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        /* --- PROFESSIONAL PRINT ENGINE --- */
+        @media print {
+            body > * { display: none !important; }
+            #print-overlay {
+                display: block !important;
+                position: fixed;
+                top: 0; left: 0; width: 100%; height: 100%;
+                background: white; z-index: 9999; padding: 0; margin: 0;
+            }
+            .print-mode-single {
+                display: flex !important; justify-content: center; align-items: center;
+                height: 100%; width: 100%;
+            }
+            .id-card-element {
+                box-shadow: none !important;
+                page-break-inside: avoid; margin: 0 auto;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            @page { size: auto; margin: 5mm; }
+        }
+        #print-overlay { display: none; }
+
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ============================================================
+        //  FIREBASE CONFIGURATION (Matched exactly to index 90.html)
+        // ============================================================
+        const firebaseConfig = {
+            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+            appId: import.meta.env.VITE_FIREBASE_APP_ID,
+            measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+        };
+        
+        let appConfig = firebaseConfig;
+        if (typeof __firebase_config !== 'undefined') { 
+            try {
+                appConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+            } catch (e) {
+                console.warn("Could not parse __firebase_config", e);
+            }
+        }
+
+        const app = initializeApp(appConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        const appId = (typeof __app_id !== 'undefined') ? __app_id : 'canteen-os-live';
+
+        // State
+        let personnelList = {};
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        let loggedInSysUser = null;
+        let isEditing = false;
+        let currentPhotoBase64 = null;
+
+        document.documentElement.classList.add('dark');
+
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-indigo-500 border-indigo-600' : 'bg-red-500 border-red-600';
+            const icon = type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle';
+            toast.className = `${colors} text-white px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 animate-fade-in text-sm font-bold mt-2`;
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0'; toast.style.transform = 'translateY(10px)'; toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        window.goToDashboard = () => {
+            window.location.href = 'index.html';
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                if (sessionStr || window.location.protocol === 'blob:') {
+                    loggedInSysUser = sessionStr ? JSON.parse(sessionStr) : { username: 'ADMIN' };
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-staff').classList.remove('hidden');
+                    loadData();
+                    switchStaffTab('directory');
+                } else {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-unauthorized').classList.remove('hidden');
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            // CRITICAL FIX: Ensure path targets 'employees' exactly as specified in index (90).html
+            const pRef = collection(db, 'artifacts', appId, 'public', 'data', 'employees');
+            onSnapshot(pRef, (snap) => {
+                personnelList = {};
+                snap.forEach(doc => personnelList[doc.id] = { id: doc.id, ...doc.data() });
+                window.renderStaffDirectory();
+            }, (err) => console.error("Personnel sync err:", err));
+        };
+
+        // ============================================================
+        //  ROSTER LOGIC
+        // ============================================================
+        window.switchStaffTab = (tab) => {
+            document.querySelectorAll('.staff-tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`staff-tab-${tab}`).classList.remove('hidden');
+            
+            document.querySelectorAll('.staff-tab-btn').forEach(el => { 
+                el.classList.remove('bg-indigo-600', 'text-white', 'shadow-md'); 
+                el.classList.add('bg-[#131B2B]', 'text-slate-400', 'shadow-sm'); 
+            });
+            document.getElementById(`staff-btn-${tab}`).classList.add('bg-indigo-600', 'text-white', 'shadow-md');
+            document.getElementById(`staff-btn-${tab}`).classList.remove('bg-[#131B2B]', 'text-slate-400', 'shadow-sm');
+
+            if (tab === 'directory') window.renderStaffDirectory();
+            if (tab === 'create' && !isEditing) resetStaffForm(); 
+        };
+
+        function resetStaffForm() {
+            document.getElementById('create-staff-form').reset();
+            const idField = document.getElementById('new-emp-id');
+            idField.readOnly = false;
+            idField.classList.remove('bg-slate-100', 'dark:bg-slate-700', 'cursor-not-allowed');
+            isEditing = false;
+            currentPhotoBase64 = null;
+            document.getElementById('emp-photo-preview').classList.add('hidden');
+            document.getElementById('emp-photo-preview').src = "";
+            document.getElementById('photo-upload-input').value = "";
+            
+            // Set Default Values to match index.html structures
+            document.getElementById('new-acct-name').value = 'CTE';
+        }
+
+        window.handlePhotoUpload = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const MAX_WIDTH = 250; 
+                    const scaleSize = MAX_WIDTH / img.width;
+                    canvas.width = MAX_WIDTH;
+                    canvas.height = img.height * scaleSize;
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    currentPhotoBase64 = canvas.toDataURL('image/jpeg', 0.8);
+                    
+                    const preview = document.getElementById('emp-photo-preview');
+                    preview.src = currentPhotoBase64;
+                    preview.classList.remove('hidden');
+                };
+                img.src = ev.target.result;
+            };
+            reader.readAsDataURL(file);
+        };
+
+        window.renderStaffDirectory = () => {
+            const container = document.getElementById('staff-directory-list');
+            container.innerHTML = '';
+            
+            const searchInput = document.getElementById('staff-search-input');
+            const searchVal = searchInput ? searchInput.value.trim().toLowerCase() : '';
+            
+            let employees = Object.values(personnelList);
+            if (searchVal) {
+                employees = employees.filter(emp => {
+                    const id = emp.id ? emp.id.toLowerCase() : '';
+                    const name = emp.name ? emp.name.toLowerCase() : '';
+                    const dept = emp.dept ? emp.dept.toLowerCase() : (emp.department ? emp.department.toLowerCase() : '');
+                    const site = emp.site ? emp.site.toLowerCase() : '';
+                    
+                    return id.includes(searchVal) || name.includes(searchVal) || dept.includes(searchVal) || site.includes(searchVal);
+                });
+            }
+
+            if (employees.length === 0) { 
+                container.innerHTML = '<tr><td colspan="6" class="px-6 py-12 text-center text-slate-500 dark:text-slate-400 font-medium"><i class="fas fa-users-slash text-3xl mb-3 opacity-50 block"></i> No personnel records found.</td></tr>'; 
+                return; 
+            }
+
+            employees.sort((a,b) => (a.name || '').localeCompare(b.name || ''));
+
+            employees.forEach(emp => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-800 border-b border-slate-800 transition-colors';
+                
+                const photoHtml = emp.photoData 
+                    ? `<img src="${emp.photoData}" class="h-9 w-9 rounded-full object-cover border border-slate-600 inline-block mr-3 shadow-sm">`
+                    : `<div class="h-9 w-9 rounded-full bg-indigo-900/30 text-indigo-400 flex items-center justify-center text-xs inline-flex mr-3 shadow-sm font-bold">${(emp.name||'U').charAt(0)}</div>`;
+
+                const safeName = (emp.name || '').replace(/'/g, "\\'");
+                const safeAccount = (emp.accountName || '').replace(/'/g, "\\'");
+                const displayId = emp.id;
+                const statusBadge = emp.status === 'INACTIVE' ? '<span class="text-red-500 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold">INACTIVE</span>' : '<span class="text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded text-[10px] font-bold">ACTIVE</span>';
+
+                tr.innerHTML = `
+                    <td class="px-6 py-4 text-sm font-bold text-white tracking-wide font-mono">${displayId}</td>
+                    <td class="px-6 py-4 text-sm flex items-center font-bold text-slate-200">${photoHtml} ${emp.name}</td>
+                    <td class="px-6 py-4 text-sm text-slate-400">${emp.dept || emp.department || '-'}</td>
+                    <td class="px-6 py-4 text-sm text-slate-400">${emp.site || '-'}</td>
+                    <td class="px-6 py-4">${statusBadge}</td>
+                    <td class="px-6 py-4 text-sm text-right">
+                        <div class="flex justify-end space-x-2">
+                             <button onclick="showQrModal('${displayId}', '${safeName}', '${safeAccount}')" class="bg-slate-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-slate-600 hover:shadow-md transition" title="Print Security Badge"><i class="fas fa-id-badge"></i></button>
+                            <button onclick="editStaff('${displayId}')" class="bg-indigo-900/30 text-indigo-400 hover:bg-indigo-900/50 px-3 py-1.5 rounded-lg text-xs font-bold transition"><i class="fas fa-edit"></i></button>
+                            <button onclick="deleteStaff('${displayId}')" class="bg-red-900/30 text-red-400 hover:bg-red-900/50 px-3 py-1.5 rounded-lg text-xs font-bold transition"><i class="fas fa-trash"></i></button>
+                        </div>
+                    </td>
+                `;
+                container.appendChild(tr);
+            });
+        };
+
+        window.createStaffProfile = async () => {
+            const empId = document.getElementById('new-emp-id').value.trim().toUpperCase();
+            if (!empId) return showToast('ID required', 'error');
+            
+            // Map strictly to index(90).html expected structure. Notice the `employees` collection
+            const staffData = {
+                id: empId,
+                name: document.getElementById('new-emp-name').value.trim(),
+                dept: document.getElementById('new-dept-name').value.trim(), 
+                site: document.getElementById('new-site-name').value.trim(),
+                accountName: document.getElementById('new-acct-name').value.trim() || 'CTE',
+                companyName: document.getElementById('new-comp-name').value.trim(),
+                status: 'ACTIVE', // Enforce active status on creation/update
+                updatedAt: serverTimestamp()
+            };
+            
+            if (currentPhotoBase64) staffData.photoData = currentPhotoBase64;
+
+            try {
+                // Ensure write accesses the correct 'employees' path
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId), staffData, { merge: true });
+                window.showToast(isEditing ? 'Profile Updated' : 'Profile Created', 'success');
+                resetStaffForm();
+                switchStaffTab('directory');
+            } catch (err) {
+                console.error(err);
+                window.showToast('Failed to save record.', 'error');
+            }
+        };
+
+        window.editStaff = (id) => {
+            const emp = personnelList[id];
+            if (!emp) return;
+            document.getElementById('new-emp-id').value = emp.id;
+            document.getElementById('new-emp-name').value = emp.name || '';
+            document.getElementById('new-dept-name').value = emp.dept || emp.department || '';
+            document.getElementById('new-site-name').value = emp.site || '';
+            document.getElementById('new-acct-name').value = emp.accountName || 'CTE';
+            document.getElementById('new-comp-name').value = emp.companyName || '';
+            
+            const idField = document.getElementById('new-emp-id');
+            idField.readOnly = true;
+            idField.classList.add('bg-slate-100', 'dark:bg-slate-700', 'cursor-not-allowed');
+            
+            if (emp.photoData) {
+                currentPhotoBase64 = emp.photoData;
+                const preview = document.getElementById('emp-photo-preview');
+                preview.src = currentPhotoBase64;
+                preview.classList.remove('hidden');
+            } else {
+                currentPhotoBase64 = null;
+                document.getElementById('emp-photo-preview').classList.add('hidden');
+            }
+
+            isEditing = true;
+            switchStaffTab('create');
+        };
+
+        window.deleteStaff = async (id) => {
+            if(confirm(`Permanently delete record for ${id}?`)) {
+                try {
+                    // Ensure deletion targets the 'employees' collection
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', id));
+                    window.showToast('Record Deleted', 'success');
+                } catch(e) {
+                    window.showToast('Failed to delete.', 'error');
+                }
+            }
+        };
+
+        // Custom Layout for Print matching Image Reference
+        window.showQrModal = (id, name, accountName) => {
+            const printOverlay = document.getElementById('print-overlay');
+            printOverlay.className = 'print-mode-single';
+            printOverlay.innerHTML = `
+                <div class="id-card-element bg-white border border-gray-300 rounded-2xl p-6 w-[280px] shadow-2xl text-center font-sans relative">
+                    <div class="border-b-[3px] border-slate-900 pb-2 mb-4">
+                        <div class="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-0.5">Employee Identity</div>
+                        <div class="font-black text-slate-900 text-[22px] tracking-tight">CANTEEN PASS</div>
+                    </div>
+                    <div class="py-1 min-h-[60px] flex flex-col justify-center items-center">
+                        <div class="font-black text-xl text-[#2563EB] leading-tight uppercase w-full truncate px-2">${name}</div>
+                        <div class="text-[13px] font-black text-slate-700 uppercase tracking-[0.2em] mt-1">${accountName || 'CTE'}</div>
+                    </div>
+                    <div class="flex justify-center my-5 bg-white p-1" id="single-qr-target"></div>
+                    <div class="border-t border-slate-300 pt-3 mt-2">
+                        <div class="text-[9px] text-slate-400 font-bold tracking-[0.15em] uppercase">Authorized Personnel Only</div>
+                    </div>
+                </div>
+            `;
+            
+            // Generate exact QR
+            new QRCode(document.getElementById('single-qr-target'), { 
+                text: id, 
+                width: 140, 
+                height: 140,
+                colorDark : "#000000",
+                colorLight : "#ffffff",
+                correctLevel : QRCode.CorrectLevel.H
+            });
+
+            // Trigger Browser Print
+            setTimeout(() => window.print(), 500);
+        };
+    </script>
+</head>
+<body class="bg-[#0B1120] text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500">
+
+    <!-- PRINT OVERLAY CONTAINER -->
+    <div id="print-overlay"></div>
+    <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="bg-indigo-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(79,70,229,0.4)]">
+                    <i class="fas fa-id-card text-white text-lg"></i>
+                </div>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Personnel<span class="text-indigo-400">Roster</span></span>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <div class="hidden md:block text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-indigo-400 tracking-wider">
+                    <i class="fas fa-database mr-1 align-middle"></i> DB ONLINE
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col relative">
+        
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center">
+                <div class="absolute animate-ping inline-flex h-20 w-20 rounded-full bg-indigo-500 opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-10 w-10 bg-indigo-600 shadow-[0_0_30px_rgba(79,70,229,0.8)]"></div>
+            </div>
+            <div class="mt-8 text-center space-y-2">
+                <h2 class="text-white font-extrabold text-2xl tracking-tight">Syncing Roster...</h2>
+            </div>
+        </div>
+
+        <!-- UNAUTHORIZED VIEW -->
+        <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
+            <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
+                <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
+                <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
+                <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase">
+                    Return to Dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN STAFF VIEW -->
+        <div id="view-staff" class="hidden container mx-auto px-6 py-8 animate-fade-in flex-grow flex flex-col">
+
+            <!-- TABS -->
+            <div class="flex justify-center mb-6 max-w-5xl mx-auto w-full mt-4">
+                <div class="bg-slate-800/80 p-1.5 rounded-xl flex gap-1 border border-slate-700 shadow-sm backdrop-blur-md w-max">
+                    <button id="staff-btn-directory" onclick="switchStaffTab('directory')" class="staff-tab-btn px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-indigo-600 text-white shadow-md flex items-center gap-2">
+                        <i class="fas fa-address-book"></i> Personnel Database
+                    </button>
+                    <button id="staff-btn-create" onclick="switchStaffTab('create')" class="staff-tab-btn px-6 py-2.5 rounded-lg text-sm font-bold transition-all text-slate-400 bg-[#131B2B] hover:text-slate-200 flex items-center gap-2">
+                        <i class="fas fa-user-plus"></i> Add / Edit Record
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Directory Tab -->
+            <div id="staff-tab-directory" class="staff-tab-content bg-[#131B2B] rounded-2xl shadow-sm border border-slate-800 flex-grow flex flex-col overflow-hidden max-w-5xl mx-auto w-full">
+                <div class="p-4 border-b border-slate-800 bg-[#131B2B]">
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500"><i class="fas fa-search"></i></span>
+                        <input type="text" id="staff-search-input" onkeyup="renderStaffDirectory()" placeholder="Search ID, Name, or Department..." class="w-full pl-11 pr-4 py-3 border border-slate-700 rounded-xl text-sm bg-slate-900 text-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition shadow-inner font-medium">
+                    </div>
+                </div>
+                <div class="overflow-x-auto flex-grow h-[500px] hide-scroll">
+                    <table class="min-w-full divide-y divide-slate-800">
+                        <thead class="bg-slate-900/50 sticky top-0 shadow-sm backdrop-blur-md">
+                            <tr>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">ID Array</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">Identity Profile</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">Department</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">Designated Site</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">Status</th>
+                                <th class="px-6 py-4 text-right text-[10px] font-bold text-slate-500 uppercase tracking-widest">Operations</th>
+                            </tr>
+                        </thead>
+                        <tbody id="staff-directory-list" class="bg-[#131B2B] divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Create/Edit Tab (Matched to Image Reference) -->
+            <div id="staff-tab-create" class="staff-tab-content hidden bg-[#131B2B] rounded-2xl shadow-sm border border-slate-800 p-8 max-w-5xl mx-auto w-full">
+                
+                <div class="text-xl font-bold text-white pb-6 flex items-center mb-6 border-b border-slate-800/50">
+                    <i class="fas fa-id-badge text-blue-500 mr-3"></i> Identity Enrollment Profile
+                </div>
+
+                <form id="create-staff-form" class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6" onsubmit="event.preventDefault(); createStaffProfile();">
+                    
+                    <!-- Exact matching of Photo upload box -->
+                    <div class="md:col-span-2 bg-[#1A2234] p-6 rounded-xl border border-slate-700/50">
+                        <label class="block text-[10px] font-bold text-slate-400 mb-3 uppercase tracking-widest">Biometric Photo Data (Optional)</label>
+                        <div class="flex items-center space-x-4">
+                            <input type="file" id="photo-upload-input" accept="image/*" class="text-sm text-slate-400 file:mr-4 file:py-2.5 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-[#2563EB] file:text-white hover:file:bg-blue-600 transition cursor-pointer bg-transparent" onchange="handlePhotoUpload(event)">
+                            <img id="emp-photo-preview" class="h-16 w-16 rounded-xl object-cover hidden border-2 border-slate-600 shadow-md bg-slate-800" src="" alt="preview">
+                        </div>
+                    </div>
+
+                    <!-- Input Fields Exact Matching UI -->
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Employee ID (QRcode Sync)</label>
+                        <input type="text" id="new-emp-id" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium" required>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Full Name</label>
+                        <input type="text" id="new-emp-name" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium" required>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Assigned Department</label>
+                        <input type="text" id="new-dept-name" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium">
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Site</label>
+                        <input type="text" id="new-site-name" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium">
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Manpower Company</label>
+                        <input type="text" id="new-comp-name" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium">
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Account</label>
+                        <input type="text" id="new-acct-name" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium" value="CTE">
+                    </div>
+
+                    <!-- Hidden Status element that exists in index but missing from layout pic to match aesthetic -->
+                    <div class="md:col-span-2 hidden">
+                        <input type="hidden" id="new-status" value="ACTIVE">
+                    </div>
+                    
+                    <div class="md:col-span-2 text-right mt-4">
+                        <button type="submit" class="bg-[#2563EB] text-white px-8 py-3 rounded-lg shadow-md shadow-blue-500/20 hover:bg-blue-600 font-bold transition transform active:scale-95 text-sm">Commit Personnel Record</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </main>
+
+</body>
+</html>

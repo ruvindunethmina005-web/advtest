@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enterprise | Access Gateway</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { slate: { 850: '#152033' } },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ============================================================
+        //  FIREBASE CONFIGURATION (Matched exactly to index 90.html)
+        // ============================================================
+        const firebaseConfig = {
+            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+            measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+            
+        };
+        
+        let appConfig = firebaseConfig;
+        if (typeof __firebase_config !== 'undefined') { 
+            try {
+                appConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+            } catch (e) {
+                console.warn("Could not parse __firebase_config", e);
+            }
+        }
+
+        const app = initializeApp(appConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        const appId = (typeof __app_id !== 'undefined') ? __app_id : 'canteen-os-live';
+
+        // State
+        let sysUserList = {};
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        let loggedInSysUser = null;
+        let isEditing = false;
+
+        document.documentElement.classList.add('dark');
+
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-teal-500 border-teal-600' : type === 'error' ? 'bg-red-500 border-red-600' : 'bg-slate-700 border-slate-600';
+            const icon = type === 'success' ? 'fa-check-circle' : type === 'error' ? 'fa-exclamation-triangle' : 'fa-info-circle';
+            toast.className = `${colors} text-white px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 animate-fade-in text-sm font-bold mt-2`;
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0'; toast.style.transform = 'translateY(10px)'; toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        window.goToDashboard = () => {
+            window.location.href = 'index.html';
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                if (sessionStr || window.location.protocol === 'blob:') {
+                    loggedInSysUser = sessionStr ? JSON.parse(sessionStr) : { username: 'ADMIN' };
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-sys-users').classList.remove('hidden');
+                    loadData();
+                    switchTab('directory');
+                } else {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-unauthorized').classList.remove('hidden');
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            // Listen to System Users DB Path
+            const sRef = collection(db, 'artifacts', appId, 'public', 'data', 'system_users');
+            onSnapshot(sRef, (snap) => {
+                sysUserList = {};
+                snap.forEach(doc => sysUserList[doc.id] = { id: doc.id, ...doc.data() });
+                window.renderDirectory();
+            }, (err) => console.error("Sys Users sync err:", err));
+        };
+
+        // ============================================================
+        //  SYS USERS LOGIC
+        // ============================================================
+        window.switchTab = (tab) => {
+            document.querySelectorAll('.sys-tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`sys-tab-${tab}`).classList.remove('hidden');
+            
+            document.querySelectorAll('.sys-tab-btn').forEach(el => { 
+                el.classList.remove('bg-teal-600', 'text-white', 'shadow-md'); 
+                el.classList.add('bg-[#131B2B]', 'text-slate-400', 'shadow-sm'); 
+            });
+            document.getElementById(`sys-btn-${tab}`).classList.add('bg-teal-600', 'text-white', 'shadow-md');
+            document.getElementById(`sys-btn-${tab}`).classList.remove('bg-[#131B2B]', 'text-slate-400', 'shadow-sm');
+
+            if (tab === 'directory') window.renderDirectory();
+            if (tab === 'create' && !isEditing) resetForm(); 
+        };
+
+        function resetForm() {
+            document.getElementById('create-sys-form').reset();
+            const idField = document.getElementById('new-sys-id');
+            idField.readOnly = false;
+            idField.classList.remove('bg-slate-800', 'dark:bg-slate-700', 'cursor-not-allowed', 'opacity-60');
+            isEditing = false;
+        }
+
+        window.renderDirectory = () => {
+            const container = document.getElementById('sys-directory-list');
+            container.innerHTML = '';
+            
+            const searchInput = document.getElementById('sys-search-input');
+            const searchVal = searchInput ? searchInput.value.trim().toLowerCase() : '';
+            
+            let users = Object.values(sysUserList);
+            if (searchVal) {
+                users = users.filter(u => {
+                    const id = u.id ? u.id.toLowerCase() : '';
+                    const name = u.name ? u.name.toLowerCase() : '';
+                    const role = u.role ? u.role.toLowerCase() : '';
+                    
+                    return id.includes(searchVal) || name.includes(searchVal) || role.includes(searchVal);
+                });
+            }
+
+            if (users.length === 0) { 
+                container.innerHTML = '<tr><td colspan="5" class="px-6 py-12 text-center text-slate-500 dark:text-slate-400 font-medium"><i class="fas fa-shield-alt text-3xl mb-3 opacity-50 block"></i> No system users found.</td></tr>'; 
+                return; 
+            }
+
+            users.sort((a,b) => (a.name || '').localeCompare(b.name || ''));
+
+            users.forEach(u => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-slate-800 border-b border-slate-800 transition-colors';
+                
+                const roleBadgeMap = {
+                    'ADMIN': 'bg-red-500/10 text-red-400 border-red-500/20',
+                    'SECURITY': 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                    'CANTEEN': 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                    'REPORT_VIEWER': 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                };
+                
+                const displayRole = u.role || 'UNKNOWN';
+                const roleClass = roleBadgeMap[displayRole] || 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+                
+                const statusBadge = u.status === 'INACTIVE' ? '<span class="text-red-500 bg-red-500/10 px-2 py-1 rounded text-[10px] font-bold">INACTIVE</span>' : '<span class="text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded text-[10px] font-bold">ACTIVE</span>';
+
+                tr.innerHTML = `
+                    <td class="px-6 py-4 text-sm font-bold text-white tracking-wide font-mono">${u.id}</td>
+                    <td class="px-6 py-4 text-sm font-bold text-slate-200">
+                        <div class="flex items-center">
+                            <div class="h-8 w-8 rounded-full bg-teal-900/30 text-teal-400 flex items-center justify-center text-xs inline-flex mr-3 shadow-sm font-bold">${(u.name||'U').charAt(0)}</div>
+                            ${u.name}
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 text-sm">
+                        <span class="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider border ${roleClass}">${displayRole}</span>
+                    </td>
+                    <td class="px-6 py-4">${statusBadge}</td>
+                    <td class="px-6 py-4 text-sm text-right">
+                        <div class="flex justify-end space-x-2">
+                            <button onclick="editSysUser('${u.id}')" class="bg-teal-900/30 text-teal-400 hover:bg-teal-900/50 px-3 py-1.5 rounded-lg text-xs font-bold transition"><i class="fas fa-edit"></i></button>
+                            <button onclick="deleteSysUser('${u.id}')" class="bg-red-900/30 text-red-400 hover:bg-red-900/50 px-3 py-1.5 rounded-lg text-xs font-bold transition ${u.id === 'ADMIN' ? 'opacity-50 cursor-not-allowed' : ''}"><i class="fas fa-trash"></i></button>
+                        </div>
+                    </td>
+                `;
+                container.appendChild(tr);
+            });
+        };
+
+        window.createProfile = async () => {
+            const sysId = document.getElementById('new-sys-id').value.trim().toUpperCase();
+            if (!sysId) return showToast('Terminal ID required', 'error');
+            
+            const payload = {
+                name: document.getElementById('new-sys-name').value.trim(),
+                role: document.getElementById('new-sys-role').value,
+                pin: document.getElementById('new-sys-pin').value.trim(),
+                status: document.getElementById('new-sys-status').value,
+                updatedAt: serverTimestamp()
+            };
+
+            try {
+                // Ensure write accesses the correct 'system_users' path
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system_users', sysId), payload, { merge: true });
+                window.showToast(isEditing ? 'Access Profile Updated' : 'Access Profile Created', 'success');
+                resetForm();
+                switchTab('directory');
+            } catch (err) {
+                console.error(err);
+                window.showToast('Failed to save record.', 'error');
+            }
+        };
+
+        window.editSysUser = (id) => {
+            const u = sysUserList[id];
+            if (!u) return;
+            
+            document.getElementById('new-sys-id').value = u.id;
+            document.getElementById('new-sys-name').value = u.name || '';
+            document.getElementById('new-sys-role').value = u.role || 'SECURITY';
+            document.getElementById('new-sys-pin').value = u.pin || '';
+            document.getElementById('new-sys-status').value = u.status || 'ACTIVE';
+            
+            const idField = document.getElementById('new-sys-id');
+            idField.readOnly = true;
+            idField.classList.add('bg-slate-800', 'dark:bg-slate-700', 'cursor-not-allowed', 'opacity-60');
+            
+            isEditing = true;
+            switchTab('create');
+        };
+
+        window.deleteSysUser = async (id) => {
+            if (id === 'ADMIN') {
+                return window.showToast('Cannot delete master ADMIN user.', 'error');
+            }
+            if(confirm(`Permanently revoke access for terminal ID ${id}?`)) {
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system_users', id));
+                    window.showToast('Access Revoked', 'success');
+                } catch(e) {
+                    window.showToast('Failed to delete.', 'error');
+                }
+            }
+        };
+    </script>
+</head>
+<body class="bg-[#0B1120] text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500">
+
+    <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="bg-teal-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(13,148,136,0.4)]">
+                    <i class="fas fa-shield-alt text-white text-lg"></i>
+                </div>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Access<span class="text-teal-400">Gateway</span></span>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <div class="hidden md:block text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-teal-400 tracking-wider">
+                    <i class="fas fa-lock mr-1 align-middle"></i> SECURE
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col relative">
+        
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center">
+                <div class="absolute animate-ping inline-flex h-20 w-20 rounded-full bg-teal-500 opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-10 w-10 bg-teal-600 shadow-[0_0_30px_rgba(13,148,136,0.8)]"></div>
+            </div>
+            <div class="mt-8 text-center space-y-2">
+                <h2 class="text-white font-extrabold text-2xl tracking-tight">Syncing Access Protocols...</h2>
+            </div>
+        </div>
+
+        <!-- UNAUTHORIZED VIEW -->
+        <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
+            <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
+                <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
+                <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
+                <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase">
+                    Return to Dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN SYSTEM USERS VIEW -->
+        <div id="view-sys-users" class="hidden container mx-auto px-6 py-8 animate-fade-in flex-grow flex flex-col">
+
+            <!-- TABS -->
+            <div class="flex justify-center mb-6 max-w-5xl mx-auto w-full mt-4">
+                <div class="bg-slate-800/80 p-1.5 rounded-xl flex gap-1 border border-slate-700 shadow-sm backdrop-blur-md w-max">
+                    <button id="sys-btn-directory" onclick="switchTab('directory')" class="sys-tab-btn px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-teal-600 text-white shadow-md flex items-center gap-2">
+                        <i class="fas fa-users-cog"></i> System Users Directory
+                    </button>
+                    <button id="sys-btn-create" onclick="switchTab('create')" class="sys-tab-btn px-6 py-2.5 rounded-lg text-sm font-bold transition-all text-slate-400 bg-[#131B2B] hover:text-slate-200 flex items-center gap-2">
+                        <i class="fas fa-user-shield"></i> Create / Edit Access Profile
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Directory Tab -->
+            <div id="sys-tab-directory" class="sys-tab-content bg-[#131B2B] rounded-2xl shadow-sm border border-slate-800 flex-grow flex flex-col overflow-hidden max-w-5xl mx-auto w-full">
+                <div class="p-4 border-b border-slate-800 bg-[#131B2B]">
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500"><i class="fas fa-search"></i></span>
+                        <input type="text" id="sys-search-input" onkeyup="renderDirectory()" placeholder="Search ID, Name, or Role..." class="w-full pl-11 pr-4 py-3 border border-slate-700 rounded-xl text-sm bg-slate-900 text-white focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition shadow-inner font-medium">
+                    </div>
+                </div>
+                <div class="overflow-x-auto flex-grow h-[500px] hide-scroll">
+                    <table class="min-w-full divide-y divide-slate-800">
+                        <thead class="bg-slate-900/50 sticky top-0 shadow-sm backdrop-blur-md">
+                            <tr>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">Terminal ID</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">Operator Name</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">Assigned Role</th>
+                                <th class="px-6 py-4 text-left text-[10px] font-bold text-slate-500 uppercase tracking-widest">Network Status</th>
+                                <th class="px-6 py-4 text-right text-[10px] font-bold text-slate-500 uppercase tracking-widest">Operations</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sys-directory-list" class="bg-[#131B2B] divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Create/Edit Tab -->
+            <div id="sys-tab-create" class="sys-tab-content hidden bg-[#131B2B] rounded-2xl shadow-sm border border-slate-800 p-8 max-w-5xl mx-auto w-full">
+                
+                <div class="text-xl font-bold text-white pb-6 flex items-center mb-6 border-b border-slate-800/50">
+                    <i class="fas fa-shield-alt text-teal-500 mr-3"></i> System Enrollment Profile
+                </div>
+
+                <form id="create-sys-form" class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6" onsubmit="event.preventDefault(); createProfile();">
+                    
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Terminal ID (Login Username)</label>
+                        <input type="text" id="new-sys-id" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-teal-500 focus:border-teal-500 outline-none transition font-medium" required>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Operator / Display Name</label>
+                        <input type="text" id="new-sys-name" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-teal-500 focus:border-teal-500 outline-none transition font-medium" required>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Assigned System Role</label>
+                        <select id="new-sys-role" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-teal-500 focus:border-teal-500 outline-none transition font-medium cursor-pointer appearance-none">
+                            <option value="ADMIN">System Administrator</option>
+                            <option value="SECURITY">Security Checkpoint</option>
+                            <option value="CANTEEN">Canteen Counter</option>
+                            <option value="REPORT_VIEWER">Audit & Reports</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Secret PIN (Password)</label>
+                        <input type="password" id="new-sys-pin" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-teal-500 focus:border-teal-500 outline-none transition font-mono tracking-[0.2em]" required placeholder="•••••">
+                    </div>
+                    
+                    <div class="md:col-span-2">
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Network Status</label>
+                        <select id="new-sys-status" class="w-full md:w-1/2 border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-teal-500 focus:border-teal-500 outline-none transition font-medium cursor-pointer appearance-none">
+                            <option value="ACTIVE">ACTIVE - Online / Provisioned</option>
+                            <option value="INACTIVE">INACTIVE - Suspended / Offline</option>
+                        </select>
+                    </div>
+                    
+                    <div class="md:col-span-2 text-right mt-4">
+                        <button type="submit" class="bg-teal-600 text-white px-8 py-3 rounded-lg shadow-md shadow-teal-500/20 hover:bg-teal-500 font-bold transition transform active:scale-95 text-sm">Commit Access Profile</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </main>
+
+</body>
+</html>

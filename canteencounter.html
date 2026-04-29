@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enterprise | Redemption Counter</title>
+    
+    <!-- Preconnect for faster loading speeds -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://www.gstatic.com">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { slate: { 850: '#152033' } },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- QR Code Libs for Camera Scanning -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        .scanner-input { caret-color: transparent; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        
+        /* Styled visible scrollbar for the page */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, query, where, updateDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Config
+        let firebaseConfig = {
+            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+            appId: import.meta.env.VITE_FIREBASE_APP_ID,
+            measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+        };
+
+        try {
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+            }
+        } catch(e) {
+            console.warn("Using local configuration.");
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Exact database tree path mapping
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'canteen-os-live';
+
+        // State
+        let todayTokens = [];
+        
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        let loggedInSysUser = null;
+        
+        // Scanning State
+        let html5QrcodeScanner = null;
+        let scanDebounceTimer = null;
+        let lastKeyTime = Date.now(); // For blocking manual typing
+
+        // Loading states to ensure all data arrives before rendering
+        let isSysUsersLoaded = false;
+        let isTokensLoaded = false;
+        let initialRenderDone = false;
+
+        document.documentElement.classList.add('dark');
+
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-emerald-500 border-emerald-600' : type === 'error' ? 'bg-red-500 border-red-600' : 'bg-blue-600 border-blue-500';
+            const icon = type === 'success' ? 'fa-check-circle' : type === 'error' ? 'fa-exclamation-triangle' : 'fa-info-circle';
+            toast.className = `${colors} text-white px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 animate-fade-in text-sm font-bold mt-2`;
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0'; toast.style.transform = 'translateY(10px)'; toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        // --- Visual Live Sync Progress Animation ---
+        window.syncAnimating = false;
+        function triggerSyncAnimation() {
+            const el = document.getElementById('sync-percent');
+            const bar = document.getElementById('sync-progress-bar');
+            const indicator = document.getElementById('sync-indicator');
+            
+            if (!el || !bar || !indicator) return;
+            if (!indicator.classList.contains('hidden') && window.syncAnimating) return;
+            
+            indicator.classList.remove('hidden');
+            indicator.classList.add('flex');
+            window.syncAnimating = true;
+            
+            let p = 0;
+            el.textContent = '0%';
+            bar.style.width = '0%';
+            
+            clearInterval(window.syncInterval);
+            window.syncInterval = setInterval(() => {
+                p += Math.floor(Math.random() * 30) + 15; 
+                if (p >= 100) {
+                    p = 100;
+                    clearInterval(window.syncInterval);
+                    setTimeout(() => {
+                        indicator.classList.add('hidden');
+                        indicator.classList.remove('flex');
+                        window.syncAnimating = false;
+                    }, 800); 
+                }
+                el.textContent = p + '%';
+                bar.style.width = p + '%';
+            }, 30);
+        }
+
+        // UI Modal for scanning feedback
+        window.showScanResultModal = (title, message, type) => {
+            const modal = document.getElementById('result-modal');
+            const iconEl = document.getElementById('res-icon');
+            const bgEl = document.getElementById('res-bg');
+            document.getElementById('res-title').textContent = title;
+            document.getElementById('res-msg').textContent = message;
+            
+            iconEl.classList.remove('hidden');
+            if (type === 'success') { iconEl.className = "fas fa-check-circle text-6xl text-white mb-4 drop-shadow-md"; }
+            else if (type === 'error') { iconEl.className = "fas fa-times-circle text-6xl text-white mb-4 drop-shadow-md"; }
+            else { iconEl.className = "fas fa-exclamation-circle text-6xl text-white mb-4 drop-shadow-md animate-pulse"; }
+            
+            modal.classList.remove('hidden');
+            if (type === 'success') { bgEl.className = "bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
+            else if (type === 'error') { bgEl.className = "bg-gradient-to-br from-red-500 to-red-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
+            else { bgEl.className = "bg-gradient-to-br from-orange-500 to-orange-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
+            
+            if(title !== 'VERIFYING...') {
+                setTimeout(() => modal.classList.add('hidden'), 1500); // Slightly longer for Canteen operator to read meal type
+            }
+        };
+
+        function getTodayStr() { return new Date().toISOString().split('T')[0]; }
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        window.goToDashboard = () => {
+            window.location.href = 'index.html';
+        };
+
+        function checkDataLoaded() {
+            if (isSysUsersLoaded && isTokensLoaded) {
+                window.renderLedger();
+                
+                if (!initialRenderDone) {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-counter').classList.remove('hidden');
+                    setTimeout(() => {
+                        const scanner = document.getElementById('canteen-scanner');
+                        if(scanner) scanner.focus();
+                    }, 100);
+                    initialRenderDone = true;
+                }
+            }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                if (sessionStr) {
+                    loggedInSysUser = JSON.parse(sessionStr);
+                    
+                    document.getElementById('view-loading').classList.remove('hidden');
+                    document.getElementById('view-counter').classList.add('hidden');
+                    
+                    loadData();
+                } else {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-unauthorized').classList.remove('hidden');
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            if (!auth.currentUser) return;
+            const todayStr = getTodayStr();
+
+            // 1. Single Point User Check (Speed Boost)
+            if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
+                const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_users', loggedInSysUser.username);
+                onSnapshot(userRef, (docSnap) => {
+                    if (!docSnap.exists() || docSnap.data().status !== 'ACTIVE') {
+                        window.location.href = 'index.html';
+                    }
+                    isSysUsersLoaded = true; checkDataLoaded();
+                }, (err) => console.error("System User fetch error:", err));
+            } else {
+                isSysUsersLoaded = true; checkDataLoaded();
+            }
+
+            // 2. Load ONLY Today's Tokens (Cuts download size by 99.9%)
+            // No need to load Employees or Prices here! The token already has the data.
+            const qTokens = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), where('issuedDate', '==', todayStr));
+            onSnapshot(qTokens, (snap) => {
+                todayTokens = [];
+                snap.forEach(doc => {
+                    todayTokens.push({ id: doc.id, ...doc.data() });
+                });
+                
+                isTokensLoaded = true;
+                checkDataLoaded();
+                
+                if (initialRenderDone) {
+                    window.renderLedger();
+                    triggerSyncAnimation(); 
+                }
+            }, (err) => {
+                console.error("Tokens fetch error:", err);
+                showToast("Failed to sync tokens.", "error");
+            });
+        };
+
+        window.renderLedger = () => {
+            const listEl = document.getElementById('canteen-list');
+            const term = (document.getElementById('canteen-search')?.value || '').toLowerCase();
+            
+            const role = loggedInSysUser?.role || 'USER';
+            const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
+
+            // Metrics
+            const redeemedTokens = todayTokens.filter(t => t.status === 'CONSUMED' || t.mealRedeemed === true);
+            document.getElementById('stat-redeemed-emp').innerText = redeemedTokens.length;
+
+            // Site Tally (For Redeemed Only)
+            const siteCounts = {};
+            redeemedTokens.forEach(t => { 
+                const siteName = t.site && t.site !== '-' ? t.site : 'Unassigned Site';
+                siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
+            });
+
+            let siteHtml = '';
+            Object.entries(siteCounts).sort((a,b) => b[1] - a[1]).forEach(([site, count]) => {
+                siteHtml += `<div class="bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-xl flex items-center gap-3 shadow-sm shrink-0 mb-2">
+                                <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">${site}</span>
+                                <span class="bg-emerald-500/20 text-emerald-400 font-black px-2 py-0.5 rounded-lg text-sm">${count}</span>
+                             </div>`;
+            });
+            if (redeemedTokens.length === 0) {
+                siteHtml = `<div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-4 py-2 border border-slate-800 rounded-xl bg-slate-800/30 w-full"><i class="fas fa-info-circle mr-2"></i> No meals redeemed yet today</div>`;
+            }
+            const siteContainer = document.getElementById('site-wise-container');
+            if (siteContainer) siteContainer.innerHTML = siteHtml;
+
+            // Render Ledger List
+            let html = '';
+            
+            let filteredTokens = todayTokens.filter(t => {
+                if (!term) return true;
+                const tId = String(t.empId || '').toLowerCase();
+                const tName = String(t.empName || '').toLowerCase();
+                const tDept = String(t.dept || '').toLowerCase();
+                return tName.includes(term) || tId.includes(term) || tDept.includes(term);
+            });
+
+            // Sort: Latest actions at the top (Consumed first, then Issued)
+            filteredTokens.sort((a, b) => {
+                const timeA = a.consumedAt?.seconds || a.issuedAt?.seconds || 0;
+                const timeB = b.consumedAt?.seconds || b.issuedAt?.seconds || 0;
+                return timeB - timeA;
+            });
+
+            filteredTokens.forEach(log => {
+                const initial = String(log.empName || '?').charAt(0).toUpperCase();
+                const isRedeemed = log.status === 'CONSUMED' || log.mealRedeemed === true;
+                
+                const mealLabel = log.mealName ? `<span class="text-[9px] uppercase font-bold text-orange-400 tracking-wider bg-orange-500/10 px-2 py-0.5 rounded ml-2 border border-orange-500/20">${log.mealName}</span>` : '';
+                const displayDept = log.dept || '-';
+                
+                let timeStr = 'Pending';
+                if (isRedeemed && log.consumedAt) {
+                    timeStr = new Date(log.consumedAt.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                } else if (log.issuedAt) {
+                    timeStr = new Date(log.issuedAt.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                }
+
+                const cardStyle = isRedeemed ? 'bg-emerald-900/10 border-emerald-900/40' : 'bg-slate-800/50 border-slate-700/50 opacity-75';
+                const avatarStyle = isRedeemed ? 'bg-emerald-900/30 text-emerald-400' : 'bg-slate-700 text-slate-400';
+                
+                const statusBadge = isRedeemed 
+                    ? `<div class="flex items-center gap-2 text-emerald-400 font-extrabold text-sm bg-emerald-900/30 px-3 py-2 rounded-xl border border-emerald-800/50 shadow-sm"><i class="fas fa-check-double"></i> <span>Redeemed</span></div>`
+                    : `<div class="flex items-center gap-2 text-amber-400 font-extrabold text-sm bg-amber-900/30 px-3 py-2 rounded-xl border border-amber-800/50 shadow-sm"><i class="fas fa-clock"></i> <span>Waiting</span></div>`;
+
+                html += `
+                    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-2xl border ${cardStyle} hover:shadow-lg transition-all duration-300 mb-3">
+                        <div class="flex items-center gap-4 shrink-0 overflow-hidden w-full sm:w-auto mb-3 sm:mb-0">
+                            <div class="w-12 h-12 rounded-full shrink-0 ${avatarStyle} flex items-center justify-center font-bold text-lg shadow-inner">
+                                ${initial}
+                            </div>
+                            <div class="min-w-0">
+                                <h4 class="font-bold text-white text-base truncate">${log.empName || 'Unknown'}</h4>
+                                <div class="text-xs text-slate-400 flex items-center mt-1 flex-wrap gap-2">
+                                    <span class="font-mono bg-slate-700 px-1.5 py-0.5 rounded border border-slate-600 text-slate-200">${log.empId || '-'}</span>
+                                    <span class="truncate">${displayDept}</span>
+                                    <span class="${isRedeemed ? 'text-emerald-500' : 'text-slate-500'} ml-1"><i class="far fa-clock"></i> ${timeStr}</span>
+                                    ${mealLabel}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="shrink-0 w-full sm:w-auto sm:pl-2 flex justify-end">
+                            <div class="flex items-center gap-2">
+                                ${statusBadge}
+                                ${isAdmin && isRedeemed ? `
+                                <button onclick="reverseRedemption('${log.id}', '${String(log.empName || '').replace(/'/g, "\\'")}')" class="text-slate-400 hover:text-red-400 bg-slate-800 hover:bg-red-900/40 w-9 h-9 flex items-center justify-center rounded-xl transition-all shadow-sm border border-slate-700 hover:border-red-800/50" title="Reverse Redemption (Admin Only)">
+                                    <i class="fas fa-undo"></i>
+                                </button>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            if (filteredTokens.length === 0) {
+                html = `<div class="text-center py-16 text-slate-400 flex flex-col items-center"><i class="fas fa-search mb-4 text-4xl opacity-50"></i><p class="font-medium">No records match criteria.</p></div>`;
+            }
+
+            listEl.innerHTML = html;
+        };
+
+        window.filterCanteen = () => window.renderLedger();
+
+        // --------------------------------------------------------------------
+        // SCANNER LOGIC (Canteen Verification)
+        // --------------------------------------------------------------------
+        window.executeScan = async (val) => {
+            if (!val || !auth.currentUser) return;
+            
+            showScanResultModal('VERIFYING...', 'Processing...', 'info');
+
+            // Fast Memory Lookup
+            const token = todayTokens.find(t => t.empId === val || t.id === val);
+
+            if (!token) {
+                return showScanResultModal('ACCESS DENIED', 'No valid token issued for today.\nPlease visit Security Check-in.', 'error');
+            }
+
+            if (token.status === 'CONSUMED' || token.mealRedeemed === true) {
+                return showScanResultModal('ALREADY REDEEMED', `${token.empName} has already collected their meal.`, 'error');
+            }
+
+            try {
+                // Update existing token to CONSUMED
+                const ref = doc(db, 'artifacts', appId, 'public', 'data', 'tokens', token.id);
+                await updateDoc(ref, {
+                    status: 'CONSUMED',
+                    mealRedeemed: true,
+                    consumedAt: serverTimestamp(),
+                    consumedBy: auth.currentUser.uid,
+                    consumedBySysUser: loggedInSysUser?.username || 'SYSTEM'
+                });
+                
+                const mealMsg = token.mealName ? `\nProvide: ${token.mealName}` : '';
+                showScanResultModal('MEAL APPROVED', `${token.empName}${mealMsg}`, 'success');
+            } catch (e) {
+                console.error("Error:", e);
+                showScanResultModal('SYSTEM FAULT', 'Failed to redeem token.', 'error');
+            }
+        };
+
+        // --- SPEED TRAP: Block Human Typing, Only Allow Fast Scanner Input ---
+        window.handleScannerInput = (event) => {
+            const currentTime = Date.now();
+            
+            if (currentTime - lastKeyTime > 60 && event.key !== 'Enter') {
+                event.target.value = '';
+            }
+            lastKeyTime = currentTime;
+
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
+                
+                const val = event.target.value.trim().toUpperCase();
+                if (val.length >= 2) executeScan(val);
+                
+                event.target.value = ''; 
+            }
+        };
+        
+        window.handleAutoScan = (event) => {
+            if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
+            scanDebounceTimer = setTimeout(() => {
+                const val = event.target.value.trim().toUpperCase();
+                if (val.length >= 2) { 
+                    executeScan(val);
+                    event.target.value = ''; 
+                }
+            }, 200); 
+        };
+
+        window.keepFocus = (elementId) => {
+            setTimeout(() => {
+                const el = document.getElementById(elementId);
+                if (!el) return;
+                const isCounterView = !document.getElementById('view-counter').classList.contains('hidden');
+                const activeEl = document.activeElement;
+                const activeTag = activeEl ? activeEl.tagName.toLowerCase() : '';
+                
+                if ((activeTag === 'input' || activeTag === 'select') && activeEl.id !== elementId) return; 
+                const isCameraActive = !document.getElementById('webcam-modal').classList.contains('hidden');
+
+                if (isCounterView && !isCameraActive) {
+                    if (document.activeElement !== el) {
+                        el.focus({ preventScroll: true });
+                    }
+                }
+            }, 100);
+        };
+
+        window.startWebcamScanner = () => {
+            document.getElementById('webcam-modal').classList.remove('hidden');
+            if (!html5QrcodeScanner) html5QrcodeScanner = new Html5Qrcode("reader");
+            html5QrcodeScanner.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } },
+                (decodedText) => { 
+                    stopWebcamScanner(); 
+                    executeScan(decodedText.trim().toUpperCase()); 
+                },
+                () => {}
+            ).catch(err => { 
+                showToast("Camera access restricted or unavailable", "error"); 
+                document.getElementById('webcam-modal').classList.add('hidden'); 
+            });
+        };
+        
+        window.stopWebcamScanner = () => {
+            document.getElementById('webcam-modal').classList.add('hidden');
+            if(html5QrcodeScanner) html5QrcodeScanner.stop().catch(()=>{});
+            document.getElementById('canteen-scanner').focus();
+        };
+
+        window.reverseRedemption = async (tokenId, empName) => {
+            if (!auth.currentUser || !loggedInSysUser) return;
+            
+            const role = loggedInSysUser?.role || 'USER';
+            const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
+            
+            if (!isAdmin) {
+                window.showToast(`Unauthorized: Only Administrators can reverse redemptions.`, 'error');
+                return;
+            }
+
+            if(!confirm(`Reverse meal redemption for ${empName}? This returns the token to 'Waiting' status.`)) return;
+
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'tokens', tokenId);
+            try {
+                // Revert to ISSUED
+                await updateDoc(ref, {
+                    status: 'ISSUED',
+                    mealRedeemed: false,
+                    consumedAt: null,
+                    consumedBy: null,
+                    consumedBySysUser: null
+                });
+                window.showToast(`Redemption for ${empName} reversed.`, 'success');
+            } catch (e) {
+                console.error("Error:", e);
+                window.showToast("System fault: Failed to reverse redemption.", "error");
+            }
+        };
+    </script>
+</head>
+<body class="bg-[#0B1120] text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500" onclick="keepFocus('canteen-scanner')">
+
+    <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800 shrink-0">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50 shadow-sm border border-slate-700/50">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="bg-emerald-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.4)]">
+                    <i class="fas fa-utensils text-white text-lg"></i>
+                </div>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Redemption<span class="text-emerald-500">Counter</span></span>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <!-- Auto-Sync Loading Percentage Indicator -->
+                <div id="sync-indicator" class="hidden flex-col items-end gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-4 py-2 rounded-xl">
+                    <div class="flex items-center text-[9px] uppercase tracking-widest text-emerald-400 font-bold">
+                        <i class="fas fa-satellite-dish animate-pulse mr-2"></i> Syncing <span id="sync-percent" class="ml-2 w-6 text-right text-emerald-300 font-mono">0%</span>
+                    </div>
+                    <div class="w-24 h-1 bg-slate-800/50 rounded-full overflow-hidden shadow-inner border border-slate-700/50">
+                        <div id="sync-progress-bar" class="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-75 ease-out w-0 shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>
+                    </div>
+                </div>
+                
+                <div class="hidden md:flex text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-emerald-400 tracking-wider items-center">
+                    <div class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse mr-2"></div> LIVE SYNC
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-1 flex flex-col relative">
+        
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center mb-6">
+                <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-emerald-500 opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-emerald-500 to-emerald-700 shadow-lg shadow-emerald-500/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
+                    <i class="fas fa-utensils text-white text-3xl"></i>
+                </div>
+            </div>
+            <div class="text-center space-y-2">
+                <h2 class="text-white font-extrabold text-3xl tracking-tight">Redemption<span class="text-emerald-500">Counter</span></h2>
+            </div>
+        </div>
+
+        <!-- UNAUTHORIZED VIEW -->
+        <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
+            <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
+                <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
+                <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
+                <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase shadow-sm">
+                    Return to Dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN COUNTER VIEW -->
+        <div id="view-counter" class="hidden container mx-auto px-4 py-6 animate-fade-in flex-1 flex flex-col">
+            
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 shrink-0 gap-4">
+                <div>
+                    <h2 class="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
+                        Service Counter 01
+                    </h2>
+                    <p class="text-slate-400 mt-2 font-medium">Verify employee tokens and distribute authorized meals.</p>
+                </div>
+            </div>
+
+            <!-- SCANNER MODULE -->
+            <div class="mb-6 w-full max-w-5xl mx-auto shrink-0">
+                <div class="bg-[#0f172a]/60 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-6 lg:p-10 flex flex-col items-center justify-center min-h-[220px]">
+                    
+                    <div id="scanner-wrapper" class="w-full flex flex-col items-center animate-fade-in">
+                        <div id="scanner-container" class="w-full relative max-w-3xl">
+                            <div class="absolute inset-y-0 left-6 sm:left-10 flex items-center pointer-events-none">
+                                <i class="fas fa-qrcode text-emerald-500 text-xl md:text-2xl transition-colors"></i>
+                            </div>
+                            <input type="text" id="canteen-scanner" inputmode="none" placeholder="SCAN ISSUED TOKEN . . ." 
+                                class="w-full pl-16 sm:pl-20 pr-6 py-5 sm:py-6 border-2 border-emerald-500/60 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/20 font-mono text-center text-lg sm:text-2xl tracking-[0.15em] sm:tracking-[0.25em] outline-none transition scanner-input shadow-[0_0_15px_rgba(16,185,129,0.15)] text-white pointer-events-none select-none" 
+                                onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus('canteen-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
+                        </div>
+                        
+                        <button onclick="startWebcamScanner()" class="mt-5 w-full max-w-sm flex items-center justify-center text-emerald-400 hover:text-emerald-300 font-bold text-sm bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 px-6 py-3 rounded-xl transition shadow-sm">
+                            <i class="fas fa-camera text-lg mr-2"></i> Launch Optical Scanner
+                        </button>
+                    </div>
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-4"><i class="fas fa-check-double mr-1"></i> Awaiting token scan for redemption...</p>
+                </div>
+            </div>
+
+            <!-- Single Focus Metric -->
+            <div class="mb-6 shrink-0 max-w-md">
+                <div class="bg-slate-800 p-5 rounded-2xl border border-blue-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
+                    <div class="absolute -right-4 -top-4 w-20 h-20 bg-blue-500/10 rounded-full pointer-events-none"></div>
+                    <div>
+                        <span class="text-blue-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">Meals Redeemed Today</span>
+                        <span id="stat-redeemed-emp" class="text-4xl font-black text-blue-400 drop-shadow-sm">0</span>
+                    </div>
+                    <div class="w-12 h-12 bg-blue-900/50 rounded-full flex items-center justify-center text-blue-500 shadow-inner"><i class="fas fa-utensils text-xl"></i></div>
+                </div>
+            </div>
+
+            <!-- Site-wise Scanned Counts -->
+            <div class="mb-6 shrink-0">
+                <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2"><i class="fas fa-map-marker-alt mr-1"></i> Redeemed Meals by Site</h4>
+                <div id="site-wise-container" class="flex flex-wrap gap-2">
+                    <!-- Dynamic Site Counts Injected Here -->
+                </div>
+            </div>
+
+            <!-- List Area Header -->
+            <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4 mt-6">
+                <h3 class="text-base font-bold text-white"><i class="fas fa-list-ul mr-2 text-slate-400"></i> Counter Ledger (Today)</h3>
+                <div class="w-full md:w-80">
+                    <div class="bg-slate-800 px-4 py-2.5 rounded-xl border border-slate-700 shadow-sm flex items-center gap-3 w-full transition-shadow focus-within:ring-2 focus-within:ring-emerald-500/50">
+                        <i class="fas fa-search text-slate-400"></i>
+                        <input type="text" id="canteen-search" onkeyup="filterCanteen()" placeholder="Search Redeemed Database..." class="bg-transparent border-none outline-none text-sm w-full text-white placeholder-slate-400 font-medium">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Expanding List Area (Page scrolling enabled) -->
+            <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col flex-1 min-h-[400px]">
+                <div class="p-4 flex-grow" id="canteen-list">
+                    <!-- Data populated reactively via JavaScript -->
+                </div>
+            </div>
+            
+        </div>
+    </main>
+
+    <!-- VERIFICATION RESULT MODAL -->
+    <div id="result-modal" class="fixed inset-0 hidden z-[70] flex items-end sm:items-center justify-center pointer-events-none p-4">
+        <div class="bg-slate-800 w-full max-w-sm rounded-3xl shadow-2xl pointer-events-auto transform transition-all scale-100 overflow-hidden border border-slate-700">
+            <div id="res-bg" class="rounded-t-3xl p-8 text-center flex flex-col items-center">
+                <i id="res-icon" class="text-6xl text-white mb-4 drop-shadow-md"></i>
+                <h2 id="res-title" class="text-2xl font-black text-white tracking-tight drop-shadow-sm"></h2>
+            </div>
+            <div class="p-8 text-center bg-slate-900/50">
+                <p id="res-msg" class="text-white font-bold text-xl leading-relaxed whitespace-pre-line"></p>
+                <button onclick="document.getElementById('result-modal').classList.add('hidden')" class="mt-8 w-full py-3.5 bg-slate-800 border border-slate-600 hover:bg-slate-700 text-white font-bold rounded-xl transition shadow-sm text-sm uppercase tracking-wider">Acknowledge</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- WEBCAM MODAL -->
+    <div id="webcam-modal" class="fixed inset-0 bg-[#0B1120]/95 hidden z-[80] flex flex-col items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-[#131B2B] rounded-3xl overflow-hidden w-full max-w-md relative shadow-2xl border border-slate-800">
+            <div class="bg-[#1F2937] text-white p-5 flex justify-between items-center border-b border-slate-700">
+                <span class="font-bold flex items-center text-sm uppercase tracking-wider"><i class="fas fa-video mr-3 text-emerald-500"></i> Optical Feed Active</span>
+                <button onclick="stopWebcamScanner()" class="text-slate-400 hover:text-white bg-slate-800 hover:bg-red-500 rounded-lg p-2 transition"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="reader" class="w-full bg-[#0B1120] min-h-[350px]"></div>
+            <div class="p-5 text-center text-xs font-bold uppercase tracking-widest text-emerald-400 bg-[#1F2937] border-t border-slate-700">Awaiting QR / Barcode Interface...</div>
+        </div>
+    </div>
+
+</body>
+</html>

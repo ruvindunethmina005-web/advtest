@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enterprise | Global Planner</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { slate: { 850: '#152033' } },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
+        
+        /* Hide number input spinners */
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { 
+            -webkit-appearance: none; 
+            margin: 0; 
+        }
+        input[type=number] {
+            -moz-appearance: textfield;
+        }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Config
+        const appConfig = {
+            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+            appId: import.meta.env.VITE_FIREBASE_APP_ID,
+            measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+        };
+
+        const app = initializeApp(appConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Exact database tree path mapping (matching index 90.html)
+        const appId = (typeof __app_id !== 'undefined') ? __app_id : 'canteen-os-live';
+
+        // State
+        let personnelMap = {};
+        let attendanceLogs = [];
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        let loggedInSysUser = null;
+
+        // Configuration State
+        let dailyRates = { Monday: 200, Tuesday: 200, Wednesday: 230, Thursday: 200, Friday: 200, Saturday: 230, Sunday: 200 };
+        let alcMealItems = {};
+
+        document.documentElement.classList.add('dark');
+
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-orange-500 border-orange-600' : 'bg-red-500 border-red-600';
+            const icon = type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle';
+            toast.className = `${colors} text-white px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 animate-fade-in text-sm font-bold mt-2`;
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0'; toast.style.transform = 'translateY(10px)'; toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        function getTodayName() {
+            const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            return days[new Date().getDay()];
+        }
+        
+        function getTodayStr() { return new Date().toISOString().split('T')[0]; }
+        
+        const formatter = new Intl.NumberFormat('en-LK', { style: 'currency', currency: 'LKR', minimumFractionDigits: 2 });
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        window.goToDashboard = () => {
+            window.location.href = 'index.html';
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                if (sessionStr || window.location.protocol === 'blob:') {
+                    loggedInSysUser = sessionStr ? JSON.parse(sessionStr) : { username: 'ADMIN' };
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-planner').classList.remove('hidden');
+                    loadData();
+                    switchPlannerTab('daily');
+                } else {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-unauthorized').classList.remove('hidden');
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            // Load System Settings (Daily Pricing & ALC Varieties)
+            const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen');
+            onSnapshot(settingsRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.dailyRates) dailyRates = { ...dailyRates, ...data.dailyRates };
+                    if (data.alcMealItems) alcMealItems = data.alcMealItems;
+                }
+                
+                // Update UI Inputs
+                Object.keys(dailyRates).forEach(day => {
+                    const input = document.getElementById(`rate-${day}`);
+                    if (input) input.value = dailyRates[day];
+                });
+
+                renderALCMealsList();
+                updateFinancialsUI();
+                renderLedger();
+            });
+
+            // Load Personnel (for mapping ID to Name & Company)
+            const pRef = collection(db, 'artifacts', appId, 'public', 'data', 'personnel');
+            onSnapshot(pRef, (snap) => {
+                personnelMap = {};
+                snap.forEach(doc => personnelMap[doc.id] = doc.data());
+                updateFinancialsUI();
+                renderLedger();
+            });
+
+            // Listen to Logs for Today
+            const aRef = collection(db, 'artifacts', appId, 'public', 'data', 'attendance_logs');
+            onSnapshot(aRef, (snap) => {
+                const today = getTodayStr();
+                attendanceLogs = [];
+                snap.forEach(doc => {
+                    const data = doc.data();
+                    if (data.date === today && data.mealRedeemed === true) {
+                        attendanceLogs.push({ id: doc.id, ...data });
+                    }
+                });
+                
+                attendanceLogs.sort((a, b) => {
+                    const tA = a.redeemedAt?.toMillis ? a.redeemedAt.toMillis() : 0;
+                    const tB = b.redeemedAt?.toMillis ? b.redeemedAt.toMillis() : 0;
+                    return tB - tA; 
+                });
+                
+                updateFinancialsUI();
+                renderLedger();
+            });
+        };
+
+        // ==========================================
+        //  TAB MANAGEMENT
+        // ==========================================
+        window.switchPlannerTab = (tab) => {
+            document.querySelectorAll('.planner-tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`planner-tab-${tab}`).classList.remove('hidden');
+            
+            document.querySelectorAll('.planner-tab-btn').forEach(el => { 
+                el.classList.remove('bg-orange-600', 'text-white', 'shadow-md'); 
+                el.classList.add('bg-white', 'dark:bg-slate-800', 'text-slate-600', 'dark:text-slate-300', 'shadow-sm'); 
+            });
+            document.getElementById(`planner-btn-${tab}`).classList.add('bg-orange-600', 'text-white', 'shadow-md');
+            document.getElementById(`planner-btn-${tab}`).classList.remove('bg-white', 'dark:bg-slate-800', 'text-slate-600', 'dark:text-slate-300', 'shadow-sm');
+        };
+
+        // ==========================================
+        //  DAILY MATRIX UPDATES
+        // ==========================================
+        window.commitGlobalUpdates = async () => {
+            const btn = document.getElementById('commit-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i> Committing...';
+            btn.disabled = true;
+
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            const newRates = {};
+            let hasError = false;
+
+            days.forEach(day => {
+                const val = parseFloat(document.getElementById(`rate-${day}`).value);
+                if (isNaN(val) || val < 0) hasError = true;
+                newRates[day] = val;
+            });
+
+            if (hasError) {
+                window.showToast("Invalid values detected. Use positive numbers.", "error");
+                btn.innerHTML = originalText; btn.disabled = false; return;
+            }
+
+            const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen');
+            try {
+                await setDoc(settingsRef, { dailyRates: newRates }, { merge: true });
+                window.showToast("Global Pricing Matrix updated successfully.", "success");
+            } catch (err) {
+                console.error(err);
+                window.showToast("Failed to sync matrix configuration.", "error");
+            } finally {
+                btn.innerHTML = originalText; btn.disabled = false;
+            }
+        };
+
+        // ==========================================
+        //  ALC MEAL VARIETIES MANAGEMENT
+        // ==========================================
+        window.addALCMeal = async () => {
+            const name = document.getElementById('new-alc-name').value.trim();
+            const cost = parseFloat(document.getElementById('new-alc-cost').value);
+            
+            if (!name) return window.showToast("Meal name is required.", "error");
+            if (isNaN(cost) || cost < 0) return window.showToast("Valid meal cost is required.", "error");
+
+            const updatedItems = { ...alcMealItems, [name]: cost };
+            const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen');
+            
+            try {
+                await setDoc(settingsRef, { alcMealItems: updatedItems }, { merge: true });
+                document.getElementById('new-alc-name').value = '';
+                document.getElementById('new-alc-cost').value = '';
+                window.showToast(`Added ${name} to ALC varieties.`, "success");
+            } catch (err) {
+                window.showToast("Failed to save meal variety.", "error");
+            }
+        };
+
+        window.removeALCMeal = async (name) => {
+            if (!confirm(`Delete ${name} from ALC Meal Varieties?`)) return;
+            const updatedItems = { ...alcMealItems };
+            delete updatedItems[name];
+            
+            const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen');
+            try {
+                await setDoc(settingsRef, { alcMealItems: updatedItems }, { merge: true });
+                window.showToast(`Removed ${name}.`, "success");
+            } catch (err) {
+                window.showToast("Failed to remove meal variety.", "error");
+            }
+        };
+
+        function renderALCMealsList() {
+            const listEl = document.getElementById('alc-meals-list');
+            listEl.innerHTML = '';
+
+            const items = Object.entries(alcMealItems);
+            if (items.length === 0) {
+                listEl.innerHTML = `<div class="text-center py-8 text-slate-500 dark:text-slate-400 font-medium"><i class="fas fa-utensils text-3xl mb-3 opacity-50 block"></i> No ALC meal varieties configured.</div>`;
+                return;
+            }
+
+            items.sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, cost]) => {
+                const el = document.createElement('div');
+                el.className = 'flex justify-between items-center p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm hover:shadow-md transition-shadow';
+                el.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold">
+                            <i class="fas fa-fish"></i>
+                        </div>
+                        <div>
+                            <h4 class="font-bold text-slate-800 dark:text-white text-sm">${name}</h4>
+                            <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">ALC Exclusive</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <div class="font-black text-slate-800 dark:text-white font-mono">${formatter.format(cost)}</div>
+                        <button onclick="removeALCMeal('${name.replace(/'/g, "\\'")}')" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 p-2 rounded-lg transition-colors"><i class="fas fa-trash-alt"></i></button>
+                    </div>
+                `;
+                listEl.appendChild(el);
+            });
+        }
+
+        // ==========================================
+        //  UI UPDATES
+        // ==========================================
+        function updateFinancialsUI() {
+            let totalLiability = 0;
+            const currentDayRate = dailyRates[getTodayName()] || 0;
+
+            attendanceLogs.forEach(log => {
+                const emp = personnelMap[log.empId] || {};
+                const company = (emp.companyName || emp.company || '').toUpperCase();
+                
+                let costApplied = currentDayRate;
+                
+                if (log.costApplied !== undefined) {
+                    costApplied = log.costApplied;
+                } else if (company === 'ALC' && log.mealName && alcMealItems[log.mealName] !== undefined) {
+                    costApplied = alcMealItems[log.mealName];
+                }
+                
+                totalLiability += costApplied;
+            });
+
+            document.getElementById('stat-redeemed').innerText = attendanceLogs.length;
+            document.getElementById('stat-token-rate').innerText = formatter.format(currentDayRate);
+            document.getElementById('stat-total-cost').innerText = formatter.format(totalLiability);
+        }
+
+        function renderLedger() {
+            const listEl = document.getElementById('ledger-list');
+            const currentDayRate = dailyRates[getTodayName()] || 0;
+            
+            if (attendanceLogs.length === 0) {
+                listEl.innerHTML = `<div class="text-center py-12 text-slate-500"><i class="fas fa-file-invoice-dollar mb-4 opacity-50 text-4xl"></i><p class="text-sm font-bold uppercase tracking-wider">No Redemptions Logged Today</p></div>`;
+                return;
+            }
+
+            let html = '';
+            attendanceLogs.forEach(log => {
+                const emp = personnelMap[log.empId] || {};
+                const empName = emp.name || log.empName || 'Unknown Employee';
+                const company = (emp.companyName || emp.company || '').toUpperCase();
+                const timeStr = log.redeemedAt?.toDate ? log.redeemedAt.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Pending';
+
+                let appliedCost = currentDayRate;
+                let mealTag = 'Standard Daily Rate';
+                let tagColor = 'orange';
+
+                if (log.costApplied !== undefined) {
+                    appliedCost = log.costApplied;
+                    mealTag = log.mealName || 'Custom Meal';
+                    if (company.includes('ALC') || log.mealName) tagColor = 'indigo';
+                } else if (company.includes('ALC') || log.mealName) {
+                    // Logic handles if the Canteen scanner hasn't recorded precise meal yet
+                    mealTag = log.mealName || 'ALC Personnel';
+                    if (log.mealName && alcMealItems[log.mealName] !== undefined) appliedCost = alcMealItems[log.mealName];
+                    tagColor = 'indigo';
+                }
+
+                html += `
+                    <div class="flex items-center justify-between p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 animate-fade-in hover:shadow-md transition-shadow">
+                        <div class="flex items-center gap-4">
+                            <div class="w-10 h-10 rounded-full bg-${tagColor}-100 dark:bg-${tagColor}-900/30 text-${tagColor}-600 dark:text-${tagColor}-400 flex items-center justify-center font-bold text-sm shadow-inner">
+                                <i class="fas ${company.includes('ALC') ? 'fa-id-badge' : 'fa-user'}"></i>
+                            </div>
+                            <div>
+                                <h4 class="font-bold text-slate-800 dark:text-white text-sm">${empName} <span class="font-mono text-[10px] ml-2 text-slate-400 bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded">${log.empId}</span></h4>
+                                <div class="text-[10px] font-bold uppercase tracking-wider text-${tagColor}-600 dark:text-${tagColor}-400 mt-1">
+                                    <i class="far fa-clock mr-1"></i> ${timeStr} • ${mealTag}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-mono font-black text-slate-800 dark:text-white text-lg">${formatter.format(appliedCost)}</div>
+                            <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Cost Applied</div>
+                        </div>
+                    </div>
+                `;
+            });
+            listEl.innerHTML = html;
+        }
+    </script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500">
+
+    <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="bg-orange-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(234,88,12,0.4)]">
+                    <i class="fas fa-calendar-alt text-white text-lg"></i>
+                </div>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Global<span class="text-orange-500">Planner</span></span>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <div class="hidden md:block text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-orange-400 tracking-wider">
+                    <i class="fas fa-chart-line mr-1 align-middle"></i> METRICS ONLINE
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col relative">
+        
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center">
+                <div class="absolute animate-ping inline-flex h-20 w-20 rounded-full bg-orange-500 opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-10 w-10 bg-orange-600 shadow-[0_0_30px_rgba(234,88,12,0.8)]"></div>
+            </div>
+            <div class="mt-8 text-center space-y-2">
+                <h2 class="text-white font-extrabold text-2xl tracking-tight">Loading Matrices...</h2>
+            </div>
+        </div>
+
+        <!-- UNAUTHORIZED VIEW -->
+        <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
+            <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
+                <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
+                <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
+                <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase">
+                    Return to Dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN PLANNER VIEW -->
+        <div id="view-planner" class="hidden container mx-auto px-6 py-8 animate-fade-in flex-grow flex flex-col">
+            <div class="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
+                <div>
+                    <h2 class="text-3xl font-extrabold text-slate-800 dark:text-white tracking-tight flex items-center gap-3">
+                        Financial Matrix
+                    </h2>
+                    <p class="text-slate-500 dark:text-slate-400 mt-2 font-medium">Monitor daily canteen liabilities and configure meal token parameters.</p>
+                </div>
+            </div>
+
+            <!-- Financial Stats -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div class="bg-white dark:bg-slate-800 p-6 rounded-[1.5rem] border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                    <div>
+                        <span class="text-slate-400 text-[11px] font-bold uppercase tracking-[0.15em] mb-1 block">Total Meals Dispensed</span>
+                        <span id="stat-redeemed" class="text-4xl font-black text-slate-800 dark:text-white">0</span>
+                    </div>
+                    <div class="w-14 h-14 bg-slate-100 dark:bg-slate-700/50 rounded-full flex items-center justify-center text-slate-500">
+                        <i class="fas fa-utensils text-2xl"></i>
+                    </div>
+                </div>
+
+                <div class="bg-white dark:bg-slate-800 p-6 rounded-[1.5rem] border border-slate-200 dark:border-slate-700 shadow-sm flex items-center justify-between">
+                    <div>
+                        <span class="text-slate-400 text-[11px] font-bold uppercase tracking-[0.15em] mb-1 block">Default Daily Token Value</span>
+                        <span id="stat-token-rate" class="text-4xl font-black font-mono text-slate-800 dark:text-white">LKR 0.00</span>
+                    </div>
+                    <div class="w-14 h-14 bg-slate-100 dark:bg-slate-700/50 rounded-full flex items-center justify-center text-slate-500">
+                        <i class="fas fa-tags text-2xl"></i>
+                    </div>
+                </div>
+
+                <div class="bg-white dark:bg-slate-800 p-6 rounded-[1.5rem] border border-orange-200 dark:border-orange-900/40 shadow-sm relative overflow-hidden flex items-center justify-between">
+                    <div class="absolute -right-4 -top-4 w-24 h-24 bg-orange-500/10 rounded-full pointer-events-none"></div>
+                    <div class="relative z-10">
+                        <span class="text-orange-600 dark:text-orange-400 text-[11px] font-bold uppercase tracking-[0.15em] mb-1 block">Combined Daily Liability</span>
+                        <span id="stat-total-cost" class="text-4xl font-black font-mono text-orange-600 dark:text-orange-400">LKR 0.00</span>
+                    </div>
+                    <div class="w-14 h-14 bg-orange-100 dark:bg-orange-900/50 rounded-full flex items-center justify-center text-orange-500 relative z-10">
+                        <i class="fas fa-file-invoice-dollar text-2xl"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Configuration & Ledger Layout -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-grow pb-8 min-h-[500px]">
+                
+                <!-- Ledger Area -->
+                <div class="bg-white dark:bg-slate-800 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col overflow-hidden max-h-[700px]">
+                    <div class="p-6 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-800/80">
+                        <h3 class="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                            <i class="fas fa-list-alt text-orange-500"></i> Active Fulfillment Ledger
+                        </h3>
+                        <div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-3 py-1 bg-slate-200 dark:bg-slate-700 rounded-lg">Today</div>
+                    </div>
+                    
+                    <div class="overflow-y-auto p-4 space-y-3 hide-scroll flex-grow" id="ledger-list">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Settings Area -->
+                <div class="bg-white dark:bg-slate-800 rounded-[2rem] border border-slate-200 dark:border-slate-700 shadow-sm p-2 flex flex-col">
+                    
+                    <div class="flex space-x-2 p-2 bg-slate-100 dark:bg-slate-900/50 rounded-[1.5rem] mb-4">
+                        <button id="planner-btn-daily" onclick="switchPlannerTab('daily')" class="planner-tab-btn flex-1 py-3 bg-orange-600 text-white rounded-xl shadow-md text-sm font-bold transition-all"><i class="fas fa-calendar-alt mr-2"></i> Standard Daily Matrix</button>
+                        <button id="planner-btn-alc" onclick="switchPlannerTab('alc')" class="planner-tab-btn flex-1 py-3 bg-transparent text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl text-sm font-bold transition-all"><i class="fas fa-fish mr-2"></i> ALC Meal Varieties</button>
+                    </div>
+
+                    <!-- TAB 1: Daily Matrix -->
+                    <div id="planner-tab-daily" class="planner-tab-content bg-slate-50 dark:bg-[#151D2C] rounded-[1.5rem] border border-slate-200 dark:border-slate-700/50 p-6 flex flex-col flex-grow">
+                        <div class="mb-6">
+                            <h3 class="text-[20px] font-extrabold text-slate-800 dark:text-white tracking-tight">Standard Daily Rates</h3>
+                            <p class="text-slate-500 dark:text-slate-400 text-xs font-medium mt-1">These default rates apply to all general employees based on the day of the week.</p>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-4 mb-8 overflow-y-auto pr-2 hide-scroll">
+                            <!-- Mon/Tue/Wed/Thu/Fri/Sat/Sun -->
+                            <div class="bg-white dark:bg-[#0B1221] rounded-2xl p-4 border border-slate-200 dark:border-transparent focus-within:ring-1 focus-within:ring-orange-500 transition-all">
+                                <div class="text-slate-500 dark:text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-1">MONDAY</div>
+                                <input type="number" id="rate-Monday" class="w-full bg-transparent text-slate-800 dark:text-white text-2xl font-black outline-none" value="200">
+                            </div>
+                            <div class="bg-white dark:bg-[#0B1221] rounded-2xl p-4 border border-slate-200 dark:border-transparent focus-within:ring-1 focus-within:ring-orange-500 transition-all">
+                                <div class="text-slate-500 dark:text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-1">TUESDAY</div>
+                                <input type="number" id="rate-Tuesday" class="w-full bg-transparent text-slate-800 dark:text-white text-2xl font-black outline-none" value="200">
+                            </div>
+                            <div class="bg-white dark:bg-[#0B1221] rounded-2xl p-4 border border-slate-200 dark:border-transparent focus-within:ring-1 focus-within:ring-orange-500 transition-all">
+                                <div class="text-slate-500 dark:text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-1">WEDNESDAY</div>
+                                <input type="number" id="rate-Wednesday" class="w-full bg-transparent text-slate-800 dark:text-white text-2xl font-black outline-none" value="230">
+                            </div>
+                            <div class="bg-white dark:bg-[#0B1221] rounded-2xl p-4 border border-slate-200 dark:border-transparent focus-within:ring-1 focus-within:ring-orange-500 transition-all">
+                                <div class="text-slate-500 dark:text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-1">THURSDAY</div>
+                                <input type="number" id="rate-Thursday" class="w-full bg-transparent text-slate-800 dark:text-white text-2xl font-black outline-none" value="200">
+                            </div>
+                            <div class="bg-white dark:bg-[#0B1221] rounded-2xl p-4 border border-slate-200 dark:border-transparent focus-within:ring-1 focus-within:ring-orange-500 transition-all">
+                                <div class="text-slate-500 dark:text-slate-400 text-[10px] font-bold tracking-widest uppercase mb-1">FRIDAY</div>
+                                <input type="number" id="rate-Friday" class="w-full bg-transparent text-slate-800 dark:text-white text-2xl font-black outline-none" value="200">
+                            </div>
+                            <div class="col-span-2 grid grid-cols-2 gap-4 mt-2">
+                                <div class="bg-orange-50 dark:bg-orange-900/20 rounded-2xl p-4 border border-orange-200 dark:border-orange-800/40 focus-within:ring-1 focus-within:ring-orange-500 transition-all">
+                                    <div class="text-orange-600 dark:text-orange-500 text-[10px] font-bold tracking-widest uppercase mb-1">SATURDAY</div>
+                                    <input type="number" id="rate-Saturday" class="w-full bg-transparent text-slate-800 dark:text-white text-2xl font-black outline-none" value="230">
+                                </div>
+                                <div class="bg-orange-50 dark:bg-orange-900/20 rounded-2xl p-4 border border-orange-200 dark:border-orange-800/40 focus-within:ring-1 focus-within:ring-orange-500 transition-all">
+                                    <div class="text-orange-600 dark:text-orange-500 text-[10px] font-bold tracking-widest uppercase mb-1">SUNDAY</div>
+                                    <input type="number" id="rate-Sunday" class="w-full bg-transparent text-slate-800 dark:text-white text-2xl font-black outline-none" value="200">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-auto">
+                            <button id="commit-btn" onclick="commitGlobalUpdates()" class="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-3.5 px-8 rounded-xl shadow-lg shadow-orange-500/30 transition-all text-sm tracking-wide active:scale-95">
+                                Commit Standard Rates
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- TAB 2: ALC Meal Varieties -->
+                    <div id="planner-tab-alc" class="planner-tab-content hidden bg-slate-50 dark:bg-[#151D2C] rounded-[1.5rem] border border-slate-200 dark:border-slate-700/50 p-6 flex flex-col flex-grow">
+                        <div class="mb-6">
+                            <h3 class="text-[20px] font-extrabold text-slate-800 dark:text-white tracking-tight text-indigo-600 dark:text-indigo-400">ALC Specialized Pricing</h3>
+                            <p class="text-slate-500 dark:text-slate-400 text-xs font-medium mt-1">Configure individual meal item varieties and costs exclusively for ALC personnel. Selecting these items overrides standard daily rates.</p>
+                        </div>
+
+                        <!-- Add Form -->
+                        <div class="flex gap-3 mb-6 bg-white dark:bg-[#0B1221] p-3 rounded-2xl border border-slate-200 dark:border-slate-700/50 items-center">
+                            <div class="flex-grow pl-2">
+                                <label class="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Meal Variety</label>
+                                <input type="text" id="new-alc-name" placeholder="e.g., Fish Meal" class="w-full bg-transparent text-slate-800 dark:text-white text-sm font-bold outline-none">
+                            </div>
+                            <div class="w-28 pl-3 border-l border-slate-200 dark:border-slate-700">
+                                <label class="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Cost (LKR)</label>
+                                <input type="number" id="new-alc-cost" placeholder="0.00" class="w-full bg-transparent text-slate-800 dark:text-white text-sm font-bold outline-none font-mono">
+                            </div>
+                            <button onclick="addALCMeal()" class="w-12 h-12 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-md transition-colors shrink-0">
+                                <i class="fas fa-plus"></i>
+                            </button>
+                        </div>
+
+                        <div class="text-[10px] font-bold uppercase text-slate-400 tracking-widest mb-3 border-b border-slate-200 dark:border-slate-700/50 pb-2">Configured ALC Varieties</div>
+                        
+                        <!-- List -->
+                        <div class="overflow-y-auto space-y-3 pr-2 flex-grow hide-scroll max-h-[300px]" id="alc-meals-list">
+                            <!-- Rendered via JS -->
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </div>
+    </main>
+</body>
+</html>

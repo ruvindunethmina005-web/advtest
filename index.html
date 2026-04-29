@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CanteenOS | Professional</title>
+    
+    <!-- Preconnect for faster loading speeds -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://www.gstatic.com">
+    <link rel="dns-prefetch" href="https://www.gstatic.com">
+    <link rel="dns-prefetch" href="https://cdn.tailwindcss.com">
+    <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { 
+                        slate: { 850: '#152033', 900: '#0f172a', 950: '#020617' }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'fade-in-up': 'fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) both'
+                    },
+                    keyframes: {
+                        fadeInUp: {
+                            '0%': { opacity: '0', transform: 'translateY(20px)' },
+                            '100%': { opacity: '1', transform: 'translateY(0)' }
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .delay-100 { animation-delay: 100ms; }
+        .delay-200 { animation-delay: 200ms; }
+        .delay-300 { animation-delay: 300ms; }
+        .delay-400 { animation-delay: 400ms; }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .dark ::-webkit-scrollbar-thumb { background: #334155; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, getDoc, getDocs, setDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // ==========================================
+        // FIREBASE CONFIGURATION
+        // ==========================================
+        let firebaseConfig = {};
+        try { firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {}; } catch(e) {}
+        
+        if (!firebaseConfig.apiKey) {
+            // Hardcoded configuration for standard deployment
+            firebaseConfig = {
+                apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+                authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+                projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+                storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+                messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+                appId: import.meta.env.VITE_FIREBASE_APP_ID,
+                measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+            };
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'canteen-os-live';
+        
+        // --- State Variables ---
+        let loggedInSysUser = null; 
+        let allTokens = [];
+        let dailyRates = {
+            "Sunday": 0, "Monday": 0, "Tuesday": 0, "Wednesday": 0,
+            "Thursday": 0, "Friday": 0, "Saturday": 0
+        };
+
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        const STATS_CACHE_KEY = `ent_dashboard_stats_${appId}`;
+
+        // Boot Synchronization States
+        let isDataReady = false;
+        let isTimeReady = false;
+        let initialRenderDone = false;
+
+        const views = {
+            login: document.getElementById('view-login'), 
+            menu: document.getElementById('view-menu'),
+            loading: document.getElementById('view-loading')
+        };
+        const navBar = document.getElementById('main-nav');
+        const roleDisplay = document.getElementById('role-display');
+        const adminControls = document.getElementById('admin-controls');
+
+        function formatRs(amount) {
+            return 'Rs. ' + amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        function getTodayStr() { 
+            const d = new Date();
+            const offsetDate = new Date(d.getTime() - (d.getTimezoneOffset() * 60000));
+            return offsetDate.toISOString().split('T')[0];
+        }
+        function getCurrentMonthStartStr() { return getTodayStr().substring(0, 7) + '-01'; }
+        function getDayName(dateString) {
+            if (!dateString) return '';
+            const parts = dateString.split('-');
+            if (parts.length === 3) {
+                const date = new Date(parts[0], parts[1] - 1, parts[2]);
+                const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                return days[date.getDay()];
+            }
+            return '';
+        }
+
+        window.showToast = (message, type = 'info') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            
+            const bgClass = type === 'error' ? 'bg-red-500' : type === 'success' ? 'bg-green-500' : 'bg-blue-600';
+            const iconClass = type === 'error' ? 'fa-exclamation-circle' : type === 'success' ? 'fa-check-circle' : 'fa-info-circle';
+            
+            toast.className = `${bgClass} text-white px-5 py-3 rounded-xl shadow-lg flex items-center gap-3 transform transition-all duration-300 translate-x-[120%]`;
+            toast.innerHTML = `<i class="fas ${iconClass} text-lg"></i> <span class="font-medium text-sm">${message}</span>`;
+            
+            container.appendChild(toast);
+            setTimeout(() => { toast.classList.remove('translate-x-[120%]'); }, 50);
+            setTimeout(() => {
+                toast.classList.add('translate-x-[120%]');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        document.documentElement.classList.add('dark'); 
+
+        function showView(viewName) {
+            Object.values(views).forEach(el => el && el.classList.add('hidden'));
+            if(views[viewName]) {
+                views[viewName].classList.remove('hidden');
+                if (viewName === 'login') views[viewName].classList.add('flex');
+            }
+        }
+        
+        function forceShowLogin() {
+            document.getElementById('view-loading').classList.add('hidden');
+            document.getElementById('view-menu').classList.add('hidden');
+            document.getElementById('main-nav').classList.add('hidden');
+            document.getElementById('view-login').classList.remove('hidden');
+            document.getElementById('view-login').classList.add('flex');
+        }
+
+        function proceedToMenu() {
+            showView('menu');
+            navBar.classList.remove('hidden');
+            if(roleDisplay && loggedInSysUser) {
+                roleDisplay.textContent = `${loggedInSysUser.name || 'Admin'} | ${loggedInSysUser.role || 'ADMIN'}`;
+            }
+            
+            const role = loggedInSysUser ? loggedInSysUser.role : '';
+            
+            document.getElementById('tile-attendance').classList.toggle('hidden', role !== 'ADMIN' && role !== 'SECURITY');
+            document.getElementById('tile-canteen').classList.toggle('hidden', role !== 'ADMIN' && role !== 'CANTEEN');
+            document.getElementById('tile-analytics').classList.toggle('hidden', role !== 'ADMIN' && role !== 'REPORT_VIEWER');
+            
+            document.getElementById('tile-planner').classList.toggle('hidden', role !== 'ADMIN');
+            document.getElementById('tile-roster').classList.toggle('hidden', role !== 'ADMIN');
+            document.getElementById('tile-access').classList.toggle('hidden', role !== 'ADMIN');
+            
+            if (role === 'ADMIN') {
+                adminControls.classList.remove('hidden');
+                adminControls.classList.add('flex');
+            } else {
+                adminControls.classList.add('hidden');
+                adminControls.classList.remove('flex');
+            }
+        }
+
+        // --- True Loading Percentage System (Used for First Login Only) ---
+        let currentLoadPercent = 0;
+        window.setRealLoadingProgress = (percent, textStatus) => {
+            if (currentLoadPercent >= 100 || initialRenderDone) return; 
+            currentLoadPercent = percent;
+            
+            const bar = document.getElementById('main-loading-bar');
+            const pct = document.getElementById('main-loading-percent');
+            const txt = document.getElementById('main-loading-text');
+            
+            if (bar) bar.style.width = percent + '%';
+            if (pct) pct.textContent = percent;
+            if (txt && textStatus) txt.textContent = textStatus;
+            
+            if (percent >= 100) {
+                setTimeout(() => {
+                    const loader = document.getElementById('view-loading');
+                    if (loader) {
+                        loader.classList.add('opacity-0');
+                        setTimeout(() => {
+                            loader.classList.add('hidden');
+                            proceedToMenu();
+                            initialRenderDone = true;
+                        }, 500);
+                    }
+                }, 600); 
+            }
+        };
+
+        // --- Live Sync Background Animation ---
+        let syncTimeout;
+        function triggerSyncAnimation() {
+            const indicator = document.getElementById('sync-indicator');
+            const bar = document.getElementById('sync-progress-bar');
+            const el = document.getElementById('sync-percent');
+            
+            if (!indicator || !bar || !el) return;
+            if (!indicator.classList.contains('hidden')) return;
+            
+            indicator.classList.remove('hidden');
+            indicator.classList.add('flex');
+            
+            bar.style.transition = 'none';
+            bar.style.width = '0%';
+            el.textContent = '0%';
+            
+            void bar.offsetWidth;
+            
+            bar.style.transition = 'width 0.8s ease-out';
+            bar.style.width = '100%';
+            
+            let p = 0;
+            const fastInterval = setInterval(() => {
+                p += 20;
+                if(p >= 100) {
+                    p = 100;
+                    clearInterval(fastInterval);
+                }
+                el.textContent = p + '%';
+            }, 100);
+
+            clearTimeout(syncTimeout);
+            syncTimeout = setTimeout(() => {
+                indicator.classList.add('hidden');
+                indicator.classList.remove('flex');
+                clearInterval(fastInterval);
+            }, 1500); 
+        }
+
+        const initAuth = async () => {
+            if (!initialRenderDone) window.setRealLoadingProgress(10, 'Initializing Security Node');
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        // ============================================================
+        // 0-SECOND INSTANT BOOT CACHE ENGINE (Persistent Login Fix)
+        // ============================================================
+        const checkInstantBoot = () => {
+            const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+            if (sessionStr) {
+                try {
+                    const session = JSON.parse(sessionStr);
+                    // Valid Session if username and role exist. (Removed strict daily date-check)
+                    if (session.username && session.role) {
+                        loggedInSysUser = session;
+                        
+                        const cachedStatsStr = localStorage.getItem(STATS_CACHE_KEY);
+                        if (cachedStatsStr) {
+                            try {
+                                const s = JSON.parse(cachedStatsStr);
+                                document.getElementById('stat-today-issued').textContent = s.tIssued || 0;
+                                document.getElementById('stat-today-redeemed').textContent = s.tRedeemed || 0;
+                                document.getElementById('stat-today-val').textContent = formatRs(s.tValue || 0);
+                                document.getElementById('stat-month-issued').textContent = s.mIssued || 0;
+                                document.getElementById('stat-month-redeemed').textContent = s.mRedeemed || 0;
+                                document.getElementById('stat-month-val').textContent = formatRs(s.mValue || 0);
+                            } catch(e) {}
+                        }
+                        
+                        document.getElementById('view-loading').classList.add('hidden');
+                        document.getElementById('view-login').classList.add('hidden');
+                        proceedToMenu();
+                        initialRenderDone = true; // Prevents the 5-sec loader from ever triggering again
+                        return true;
+                    }
+                } catch(e) {}
+            }
+            return false;
+        };
+
+        const didInstantBoot = checkInstantBoot();
+
+        // ============================================================
+        // 5-SECOND MANDATORY LOAD & WAIT ALGORITHM (For First Login Only)
+        // ============================================================
+        function startBootSequence() {
+            isDataReady = false;
+            isTimeReady = false;
+            
+            document.getElementById('view-login').classList.add('hidden');
+            document.getElementById('view-login').classList.remove('flex');
+            document.getElementById('view-menu').classList.add('hidden');
+            
+            const loader = document.getElementById('view-loading');
+            loader.classList.remove('hidden');
+            loader.classList.remove('opacity-0');
+            
+            // Mandatory 5 Second Delay minimum to ensure visuals during initial login
+            setTimeout(() => {
+                isTimeReady = true;
+                attemptReveal();
+            }, 5000);
+            
+            loadData();
+        }
+
+        function attemptReveal() {
+            // Unlocks ONLY when BOTH 5 seconds have passed AND Data is fully processed
+            if (isTimeReady && isDataReady && !initialRenderDone) {
+                window.setRealLoadingProgress(100, 'Intelligence Loaded');
+            }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                if (!didInstantBoot) {
+                    window.setRealLoadingProgress(30, 'Verifying Credentials');
+                    const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                    if (sessionStr) {
+                        try {
+                            const session = JSON.parse(sessionStr);
+                            // If memory exists but wasn't caught by early boot (rare fallback)
+                            if(session.username && session.role) {
+                                loggedInSysUser = session;
+                                startBootSequence();
+                            } else {
+                                forceShowLogin();
+                            }
+                        } catch (e) { forceShowLogin(); }
+                    } else {
+                        forceShowLogin();
+                    }
+                } else {
+                    // Dashboard is already visible (0-second load). Start quiet background sync.
+                    loadData();
+                }
+            } else {
+                if (!didInstantBoot) {
+                    forceShowLogin();
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            if (!auth.currentUser) return;
+            
+            let pricesLoaded = false;
+            let tokensLoaded = false;
+            
+            const checkData = () => {
+                if (pricesLoaded && tokensLoaded) {
+                    calculateDashboardStats(); 
+                    isDataReady = true;        
+                    if (!initialRenderDone) attemptReveal(); 
+                }
+            };
+
+            // 1. Single Point User Check (NO AUTO-LOGOUT)
+            if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
+                const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_users', loggedInSysUser.username);
+                onSnapshot(userRef, (docSnap) => {
+                    if (docSnap.exists() && docSnap.data().role) {
+                        loggedInSysUser.role = docSnap.data().role;
+                        localStorage.setItem(SYS_SESSION_KEY, JSON.stringify(loggedInSysUser));
+                    }
+                    if (!initialRenderDone) window.setRealLoadingProgress(45, 'Establishing Link');
+                }, (err) => {
+                    console.warn("User fetch warning:", err);
+                    if (!initialRenderDone) window.setRealLoadingProgress(45, 'Establishing Link');
+                });
+            } else {
+                if (!initialRenderDone) window.setRealLoadingProgress(45, 'Establishing Link');
+            }
+
+            // 2. Fetch Meal Prices
+            const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices');
+            onSnapshot(settingsRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.prices) dailyRates = data.prices;
+                    else if (data.dailyRates) dailyRates = data.dailyRates;
+                }
+                pricesLoaded = true;
+                if (!initialRenderDone) window.setRealLoadingProgress(60, 'Loading Financials');
+                checkData();
+            }, (err) => {
+                console.error("Prices fetch error:", err);
+                pricesLoaded = true; checkData(); 
+            });
+
+            // 3. Fast Data Loading: Fetch ONLY current month's tokens for background sync
+            const currentMonthStart = getCurrentMonthStartStr();
+            const qTokens = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), where('issuedDate', '>=', currentMonthStart));
+            
+            onSnapshot(qTokens, (snap) => {
+                allTokens = [];
+                snap.forEach(doc => { allTokens.push(doc.data()); });
+                
+                if (!isDataReady && !initialRenderDone) {
+                    tokensLoaded = true;
+                    window.setRealLoadingProgress(80, 'Processing Ledger');
+                    checkData();
+                } else {
+                    // Quiet Background Update (Dashboard already visible)
+                    calculateDashboardStats();
+                    triggerSyncAnimation();
+                }
+            }, (err) => {
+                console.error("Tokens fetch error:", err);
+                if (!isDataReady && !initialRenderDone) {
+                    tokensLoaded = true; checkData(); 
+                }
+            });
+        };
+
+        // Fast Data Processor & Memory Cacher
+        function calculateDashboardStats() {
+            const todayStr = getTodayStr();
+            const monthStr = todayStr.substring(0, 7);
+
+            let tIssued = 0, tRedeemed = 0, tValue = 0;
+            let mIssued = 0, mRedeemed = 0, mValue = 0;
+
+            for(let i=0; i < allTokens.length; i++) {
+                const log = allTokens[i];
+                const logDateStr = log.issuedDate || log.date;
+                
+                if (!logDateStr) continue; 
+
+                const isRedeemed = log.status === 'CONSUMED' || log.status === 'REDEEMED' || log.mealRedeemed === true;
+                
+                let rateForDay = 0;
+                if (log.costs && typeof log.costs.total === 'number') {
+                    rateForDay = log.costs.total;
+                } else if (log.costApplied) {
+                    rateForDay = log.costApplied;
+                } else {
+                    rateForDay = parseFloat(dailyRates[getDayName(logDateStr)]) || 0;
+                }
+
+                if (logDateStr === todayStr) {
+                    tIssued++;
+                    if (isRedeemed) { tRedeemed++; tValue += rateForDay; }
+                }
+                if (logDateStr.startsWith(monthStr)) {
+                    mIssued++;
+                    if (isRedeemed) { mRedeemed++; mValue += rateForDay; }
+                }
+            }
+
+            // Secure Cache Commit
+            const statsObj = { tIssued, tRedeemed, tValue, mIssued, mRedeemed, mValue };
+            localStorage.setItem(STATS_CACHE_KEY, JSON.stringify(statsObj));
+
+            // DOM Render
+            document.getElementById('stat-today-issued').textContent = tIssued;
+            document.getElementById('stat-today-redeemed').textContent = tRedeemed;
+            document.getElementById('stat-today-val').textContent = formatRs(tValue);
+            document.getElementById('stat-month-issued').textContent = mIssued;
+            document.getElementById('stat-month-redeemed').textContent = mRedeemed;
+            document.getElementById('stat-month-val').textContent = formatRs(mValue);
+        }
+
+        window.appLogin = async (e) => {
+            e.preventDefault();
+            const u = document.getElementById('login-username').value.trim().toUpperCase();
+            const p = document.getElementById('login-pin').value.trim();
+            
+            const btn = document.getElementById('login-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Authenticating...';
+            btn.disabled = true;
+
+            // Master access
+            if (u === 'ADMIN' && p === 'ADMIN123') {
+                loggedInSysUser = { username: 'ADMIN', name: 'System Admin', role: 'ADMIN', status: 'ACTIVE' };
+                localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ username: 'ADMIN', name: 'System Admin', role: 'ADMIN', date: getTodayStr() }));
+                document.getElementById('login-error').classList.add('hidden');
+                
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                
+                startBootSequence(); // Trigger 5-sec loader on First Login
+                return;
+            }
+
+            // Database Auth
+            try {
+                const docSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system_users', u));
+                if (docSnap.exists()) {
+                    const user = docSnap.data();
+                    if (user.pin === p && user.status === 'ACTIVE') {
+                        loggedInSysUser = user;
+                        localStorage.setItem(SYS_SESSION_KEY, JSON.stringify({ 
+                            username: u, 
+                            name: user.name,
+                            role: user.role,
+                            date: getTodayStr() 
+                        }));
+                        document.getElementById('login-error').classList.add('hidden');
+                        
+                        btn.innerHTML = originalText;
+                        btn.disabled = false;
+                        
+                        startBootSequence(); // Trigger 5-sec loader on First Login
+                    } else {
+                        document.getElementById('login-error').classList.remove('hidden');
+                        btn.innerHTML = originalText;
+                        btn.disabled = false;
+                    }
+                } else {
+                    document.getElementById('login-error').classList.remove('hidden');
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            } catch (err) {
+                console.error("Login fetch error:", err);
+                showToast("Network Error: Could not verify user.", "error");
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        };
+
+        window.appLogout = () => {
+            localStorage.removeItem(SYS_SESSION_KEY);
+            localStorage.removeItem(STATS_CACHE_KEY); // Clear cache on logout
+            loggedInSysUser = null;
+            initialRenderDone = false; // Reset rendering state
+            forceShowLogin();
+        };
+
+        window.openModule = (path) => {
+            window.location.href = path;
+        };
+        
+        // --- Data Backup & Restore Functions ---
+        window.backupData = async () => {
+            if (!loggedInSysUser || loggedInSysUser.role !== 'ADMIN') return showToast('Unauthorized', 'error');
+
+            const btn = document.getElementById('btn-backup');
+            const originalContent = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span class="hidden sm:inline ml-1">Exporting...</span>';
+            btn.disabled = true;
+
+            const collectionsToBackup = ['system_users', 'employees', 'tokens', 'settings'];
+            const backupObj = {};
+
+            try {
+                for (const colName of collectionsToBackup) {
+                    const colRef = collection(db, 'artifacts', appId, 'public', 'data', colName);
+                    const snapshot = await getDocs(colRef);
+                    backupObj[colName] = {};
+                    snapshot.forEach(doc => { backupObj[colName][doc.id] = doc.data(); });
+                }
+
+                const jsonStr = JSON.stringify(backupObj, null, 2);
+                const blob = new Blob([jsonStr], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `CanteenOS_Backup_${getTodayStr()}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showToast('System data backed up successfully!', 'success');
+            } catch (err) {
+                showToast("Backup failed.", 'error');
+            } finally {
+                btn.innerHTML = originalContent;
+                btn.disabled = false;
+            }
+        };
+
+        window.restoreData = async (event) => {
+            if (!loggedInSysUser || loggedInSysUser.role !== 'ADMIN') return;
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const btn = document.getElementById('btn-restore');
+            const originalContent = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span class="hidden sm:inline ml-1">Importing...</span>';
+            btn.disabled = true;
+
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    let importedCount = 0;
+                    for (const [colName, docs] of Object.entries(data)) {
+                        if(typeof docs === 'object' && docs !== null) {
+                            for (const [docId, docData] of Object.entries(docs)) {
+                                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', colName, docId), docData);
+                                importedCount++;
+                            }
+                        }
+                    }
+                    showToast(`Restore complete! ${importedCount} records imported.`, 'success');
+                } catch (err) {
+                    showToast("Restore failed: invalid file.", 'error');
+                } finally {
+                    btn.innerHTML = originalContent;
+                    btn.disabled = false;
+                    event.target.value = ''; 
+                }
+            };
+            reader.readAsText(file);
+        };
+    </script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500 overflow-x-hidden selection:bg-blue-500/30 selection:text-blue-200">
+
+    <!-- TOAST NOTIFICATION CONTAINER -->
+    <div id="toast-container" class="fixed top-20 right-4 z-[100] flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- FLOATING WHATSAPP BUTTON -->
+    <a href="https://wa.me/94765766230" target="_blank" class="fixed bottom-6 left-6 z-50 flex items-center group cursor-pointer drop-shadow-2xl hover:drop-shadow-[0_0_15px_rgba(34,197,94,0.6)] transition-all duration-300 transform hover:scale-105">
+        <div class="bg-green-500 text-white w-14 h-14 rounded-full flex items-center justify-center text-3xl relative">
+            <i class="fab fa-whatsapp"></i>
+            <span class="absolute -top-1 -right-1 bg-red-500 h-3 w-3 rounded-full animate-ping"></span>
+            <span class="absolute -top-1 -right-1 bg-red-500 h-3 w-3 rounded-full"></span>
+        </div>
+    </a>
+
+    <!-- Global Navigation -->
+    <nav id="main-nav" class="bg-slate-900/95 text-white shadow-2xl hidden sticky top-0 z-40 border-b border-slate-800 backdrop-blur-xl">
+        <div class="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center">
+            
+            <div class="flex items-center gap-3 sm:gap-4">
+                <div class="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(37,99,235,0.4)] overflow-hidden p-1.5">
+                    <i class="fas fa-utensils text-white text-lg"></i>
+                </div>
+                <div class="flex flex-col">
+                    <span class="font-black text-lg sm:text-xl tracking-tight text-white hidden sm:block leading-none">CanteenOS <span class="text-blue-500">Pro</span></span>
+                    <span class="text-[10px] text-slate-400 font-semibold uppercase tracking-widest hidden sm:block mt-0.5">Professional</span>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-3 sm:gap-5">
+                <!-- Admin Backup & Restore Controls -->
+                <div id="admin-controls" class="hidden items-center space-x-2 border-r border-slate-700 pr-3 sm:pr-5">
+                    <button id="btn-backup" onclick="backupData()" class="text-xs sm:text-sm bg-slate-800 hover:bg-blue-600 text-slate-300 hover:text-white px-3 sm:px-4 py-2 rounded-lg font-semibold transition-all shadow-sm flex items-center">
+                        <i class="fas fa-download"></i> <span class="hidden sm:inline ml-2">Backup</span>
+                    </button>
+                    <button id="btn-restore" onclick="document.getElementById('restore-file').click()" class="text-xs sm:text-sm bg-slate-800 hover:bg-emerald-600 text-slate-300 hover:text-white px-3 sm:px-4 py-2 rounded-lg font-semibold transition-all shadow-sm flex items-center">
+                        <i class="fas fa-upload"></i> <span class="hidden sm:inline ml-2">Restore</span>
+                    </button>
+                    <input type="file" id="restore-file" class="hidden" accept=".json" onchange="restoreData(event)">
+                </div>
+
+                <div class="hidden md:flex items-center space-x-2 bg-slate-800/80 border border-slate-700/50 px-4 py-1.5 rounded-full shadow-inner">
+                    <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <div id="role-display" class="text-xs font-bold text-slate-300 tracking-wide truncate max-w-[150px]">DASHBOARD</div>
+                </div>
+                
+                <button onclick="appLogout()" class="text-sm bg-transparent hover:bg-red-500/10 border border-slate-700 hover:border-red-500 text-slate-300 hover:text-red-400 px-4 sm:px-5 py-2 rounded-lg font-semibold transition-all duration-300 flex items-center group">
+                    <i class="fas fa-sign-out-alt sm:mr-2 group-hover:transform group-hover:translate-x-1 transition-transform"></i> <span class="hidden sm:inline">Logout</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col relative">
+        
+        <!-- LOADING VIEW (True Percentage Tracker) -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-slate-950 flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center mb-6">
+                <!-- Pinging ring -->
+                <div class="absolute inline-flex h-32 w-32 rounded-full bg-blue-500 opacity-30 animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite]"></div>
+                <!-- Blurred background -->
+                <div class="absolute inline-flex h-20 w-20 rounded-full bg-blue-600 opacity-40 blur-xl"></div>
+                <!-- Rounded Square Utensils Icon -->
+                <div class="relative inline-flex items-center justify-center h-16 w-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-[0_0_30px_10px_rgba(59,130,246,0.5)]">
+                    <i class="fas fa-utensils text-white text-3xl"></i>
+                </div>
+            </div>
+            <h2 class="text-white font-extrabold text-2xl tracking-tight z-10 relative mt-2">Loading System...</h2>
+            
+            <div class="w-48 sm:w-64 mt-6 bg-slate-800 rounded-full h-1.5 overflow-hidden shadow-inner border border-slate-700/50">
+                <div id="main-loading-bar" class="h-full bg-gradient-to-r from-blue-600 to-indigo-500 w-0 transition-all duration-500 ease-out shadow-[0_0_10px_rgba(59,130,246,0.8)]"></div>
+            </div>
+            <div class="mt-3 text-[10px] font-bold uppercase tracking-widest text-blue-400 flex items-center gap-2">
+                <span id="main-loading-text">Initializing Request</span>
+                <span class="bg-blue-500/20 px-2 py-0.5 rounded font-mono"><span id="main-loading-percent">0</span>%</span>
+            </div>
+        </div>
+
+        <!-- LOGIN UI -->
+        <div id="view-login" class="fixed inset-0 z-50 bg-[#0B1120] hidden flex-col items-center justify-center animate-fade-in" style="background-image: linear-gradient(rgba(11, 17, 32, 0.85), rgba(11, 17, 32, 0.95)), url('https://i.ibb.co/xKvVg48C/Picsart-26-04-23-12-45-40-850.jpg'); background-size: cover; background-position: center;">
+            <div class="w-full max-w-[1000px] grid grid-cols-1 md:grid-cols-2 gap-12 p-8 items-center flex-grow relative z-10">
+                <!-- Left Content: Branding -->
+                <div class="flex flex-col items-start hidden md:flex animate-fade-in-up delay-100">
+                    <div class="bg-[#2563EB] w-16 h-16 rounded-2xl flex items-center justify-center shadow-[0_0_30px_rgba(37,99,235,0.4)] mb-6">
+                        <i class="fas fa-utensils text-white text-3xl"></i>
+                    </div>
+                    <h1 class="text-[2.75rem] font-extrabold text-white mb-0 tracking-tight leading-tight drop-shadow-lg">CanteenOS</h1>
+                    <h2 class="text-[2.75rem] font-extrabold text-[#3B82F6] mb-6 tracking-tight leading-tight drop-shadow-lg">Professional</h2>
+                    <p class="text-slate-300 text-sm leading-relaxed max-w-sm drop-shadow-md font-medium">
+                        Secure enterprise terminal access featuring real-time analytics and biometric photo verification, exclusively engineered for KDC & ALC facilities.
+                    </p>
+                </div>
+
+                <!-- Right Content: Login Form -->
+                <div class="w-full max-w-md mx-auto relative animate-fade-in-up delay-200">
+                    <div class="bg-[#131B2B]/90 backdrop-blur-xl border border-[#1F2937] rounded-[2rem] p-10 shadow-2xl relative z-10 overflow-hidden">
+                        <div class="absolute -top-24 -right-24 w-48 h-48 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                        
+                        <div class="text-center mb-10 relative z-20">
+                            <h2 class="text-2xl font-extrabold text-white mb-2">Terminal Access</h2>
+                            <p class="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">Secure Terminal ID Required</p>
+                        </div>
+                        
+                        <form onsubmit="appLogin(event)" class="space-y-6 relative z-20">
+                            <div>
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">TERMINAL ID</label>
+                                <input type="text" id="login-username" class="w-full px-4 py-3.5 border border-[#1F2937] rounded-xl bg-[#0B1120]/80 text-sm text-slate-200 focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] outline-none transition-all font-bold uppercase" required autocomplete="off">
+                            </div>
+
+                            <div>
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">SECRET KEY (ACCESS AUTH)</label>
+                                <input type="password" id="login-pin" class="w-full px-4 py-3.5 border border-[#1F2937] rounded-xl bg-[#0B1120]/80 text-sm text-slate-200 focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6] outline-none transition-all tracking-widest shadow-inner" required autocomplete="off">
+                            </div>
+                            
+                            <div id="login-error" class="hidden text-red-400 text-xs text-center font-semibold bg-red-500/10 py-3 rounded-lg border border-red-500/20 flex items-center justify-center">
+                                <i class="fas fa-exclamation-circle mr-2"></i> Invalid credentials.
+                            </div>
+                            
+                            <div class="pt-4">
+                                <button type="submit" id="login-btn" class="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3.5 rounded-xl shadow-[0_0_20px_rgba(37,99,235,0.4)] transition-all transform active:scale-[0.98] text-sm tracking-wide">
+                                    Verify & Connect
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="absolute bottom-6 w-full text-center z-20 pointer-events-none px-4">
+                <p class="text-[12px] text-slate-300 font-semibold mb-1 drop-shadow-md">Application developed by Growth Gen</p>
+                <p class="text-[11px] text-slate-500 font-medium drop-shadow-md">© 2026 360° Management (Pvt) Ltd. All rights reserved.</p>
+            </div>
+        </div>
+
+        <!-- DASHBOARD MENU & STATS -->
+        <div id="view-menu" class="hidden container mx-auto px-4 sm:px-6 py-8 animate-fade-in-up relative z-10">
+            
+            <div class="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div class="flex items-center justify-between w-full">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-800 dark:text-white tracking-tight">Operations Dashboard</h2>
+                        <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">Real-time canteen utilization and financial metrics</p>
+                    </div>
+                    
+                    <!-- Auto-Sync Loading Percentage Indicator -->
+                    <div id="sync-indicator" class="hidden flex-col items-end gap-1.5 bg-blue-500/5 border border-blue-500/10 px-4 py-2.5 rounded-xl ml-4">
+                        <div class="flex items-center text-[10px] uppercase tracking-widest text-blue-400 font-bold">
+                            <i class="fas fa-satellite-dish animate-pulse mr-2"></i> Auto-Syncing <span id="sync-percent" class="ml-2 w-7 text-right text-blue-300 font-mono">0%</span>
+                        </div>
+                        <div class="w-32 sm:w-40 h-1.5 bg-slate-800/50 rounded-full overflow-hidden shadow-inner border border-slate-700/50">
+                            <div id="sync-progress-bar" class="h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all duration-75 ease-out w-0 shadow-[0_0_8px_rgba(59,130,246,0.6)]"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Real Time Stats Overview -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-10 animate-fade-in-up delay-100">
+                <!-- Today's Stats -->
+                <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+                    <div class="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full blur-xl -mr-6 -mt-6"></div>
+                    <div class="flex items-center mb-6 border-b border-slate-100 dark:border-slate-800 pb-4">
+                        <div class="w-10 h-10 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center text-blue-600 dark:text-blue-400 mr-3">
+                            <i class="fas fa-calendar-day"></i>
+                        </div>
+                        <h3 class="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Today's Summary</h3>
+                    </div>
+                    
+                    <div class="grid grid-cols-3 gap-4">
+                        <div class="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl text-center">
+                            <p class="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider mb-1">Tokens Issued</p>
+                            <p id="stat-today-issued" class="text-2xl font-black text-slate-800 dark:text-white">0</p>
+                        </div>
+                        <div class="bg-emerald-50 dark:bg-emerald-500/10 p-4 rounded-xl text-center border border-emerald-100 dark:border-emerald-500/20">
+                            <p class="text-[10px] text-emerald-600 dark:text-emerald-400 uppercase font-bold tracking-wider mb-1">Meals Redeemed</p>
+                            <p id="stat-today-redeemed" class="text-2xl font-black text-emerald-600 dark:text-emerald-400">0</p>
+                        </div>
+                        <div class="bg-orange-50 dark:bg-orange-500/10 p-4 rounded-xl text-center border border-orange-100 dark:border-orange-500/20">
+                            <p class="text-[10px] text-orange-600 dark:text-orange-400 uppercase font-bold tracking-wider mb-1">Total Value</p>
+                            <p id="stat-today-val" class="text-lg mt-1 font-bold text-orange-600 dark:text-orange-400 font-mono break-words">Rs. 0.00</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Month Stats -->
+                <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
+                    <div class="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-xl -mr-6 -mt-6"></div>
+                    <div class="flex items-center mb-6 border-b border-slate-100 dark:border-slate-800 pb-4">
+                        <div class="w-10 h-10 rounded-lg bg-purple-50 dark:bg-purple-500/10 flex items-center justify-center text-purple-600 dark:text-purple-400 mr-3">
+                            <i class="fas fa-chart-line"></i>
+                        </div>
+                        <h3 class="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Month-to-Date (MTD)</h3>
+                    </div>
+                    
+                    <div class="grid grid-cols-3 gap-4">
+                        <div class="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl text-center">
+                            <p class="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider mb-1">Tokens Issued</p>
+                            <p id="stat-month-issued" class="text-2xl font-black text-slate-800 dark:text-white">0</p>
+                        </div>
+                        <div class="bg-emerald-50 dark:bg-emerald-500/10 p-4 rounded-xl text-center border border-emerald-100 dark:border-emerald-500/20">
+                            <p class="text-[10px] text-emerald-600 dark:text-emerald-400 uppercase font-bold tracking-wider mb-1">Meals Redeemed</p>
+                            <p id="stat-month-redeemed" class="text-2xl font-black text-emerald-600 dark:text-emerald-400">0</p>
+                        </div>
+                        <div class="bg-orange-50 dark:bg-orange-500/10 p-4 rounded-xl text-center border border-orange-100 dark:border-orange-500/20">
+                            <p class="text-[10px] text-orange-600 dark:text-orange-400 uppercase font-bold tracking-wider mb-1">Total Cost Liability</p>
+                            <p id="stat-month-val" class="text-lg mt-1 font-bold text-orange-600 dark:text-orange-400 font-mono break-words">Rs. 0.00</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Application Routing Grid -->
+            <h2 class="text-xl font-bold text-slate-800 dark:text-white mb-6 animate-fade-in-up delay-200">System Modules</h2>
+            
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 lg:gap-6 animate-fade-in-up delay-300">
+                
+                <div id="tile-attendance" onclick="openModule('attendance.html')" class="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl shadow-sm hover:shadow-xl cursor-pointer border border-slate-200 dark:border-slate-800 group transition-all duration-300 hover:-translate-y-1.5 relative overflow-hidden flex flex-col h-full">
+                    <div class="h-14 w-14 bg-blue-50 dark:bg-blue-500/10 rounded-xl flex items-center justify-center mb-5 text-blue-600 dark:text-blue-400 group-hover:bg-blue-600 group-hover:text-white transition-colors duration-300"><i class="fas fa-user-check text-xl"></i></div>
+                    <h3 class="font-bold text-lg text-slate-800 dark:text-white mb-2">Security Check-in</h3>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed flex-grow">Mark employee attendance and issue valid token passes for today's meals.</p>
+                    <div class="mt-4 text-blue-600 dark:text-blue-400 text-xs font-semibold flex items-center opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0 duration-300">Open Module <i class="fas fa-arrow-right ml-1"></i></div>
+                </div>
+                
+                <div id="tile-canteen" onclick="openModule('canteencounter.html')" class="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl shadow-sm hover:shadow-xl cursor-pointer border border-slate-200 dark:border-slate-800 group transition-all duration-300 hover:-translate-y-1.5 relative overflow-hidden flex flex-col h-full">
+                    <div class="h-14 w-14 bg-emerald-50 dark:bg-emerald-500/10 rounded-xl flex items-center justify-center mb-5 text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-500 group-hover:text-white transition-colors duration-300"><i class="fas fa-utensils text-xl"></i></div>
+                    <h3 class="font-bold text-lg text-slate-800 dark:text-white mb-2">Redeem Meals</h3>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed flex-grow">Counter operator panel to scan/verify tokens and mark meals as served.</p>
+                    <div class="mt-4 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0 duration-300">Open Module <i class="fas fa-arrow-right ml-1"></i></div>
+                </div>
+                
+                <div id="tile-planner" onclick="openModule('mealplan.html')" class="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl shadow-sm hover:shadow-xl cursor-pointer border border-slate-200 dark:border-slate-800 group transition-all duration-300 hover:-translate-y-1.5 relative overflow-hidden flex flex-col h-full">
+                    <div class="h-14 w-14 bg-orange-50 dark:bg-orange-500/10 rounded-xl flex items-center justify-center mb-5 text-orange-600 dark:text-orange-400 group-hover:bg-orange-500 group-hover:text-white transition-colors duration-300"><i class="fas fa-cogs text-xl"></i></div>
+                    <h3 class="font-bold text-lg text-slate-800 dark:text-white mb-2">Meal Configuration</h3>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed flex-grow">Set LKR token values, define meal plans, and adjust canteen settings.</p>
+                    <div class="mt-4 text-orange-600 dark:text-orange-400 text-xs font-semibold flex items-center opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0 duration-300">Open Module <i class="fas fa-arrow-right ml-1"></i></div>
+                </div>
+                
+                <div id="tile-roster" onclick="openModule('roster.html')" class="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl shadow-sm hover:shadow-xl cursor-pointer border border-slate-200 dark:border-slate-800 group transition-all duration-300 hover:-translate-y-1.5 relative overflow-hidden flex flex-col h-full">
+                    <div class="h-14 w-14 bg-indigo-50 dark:bg-indigo-500/10 rounded-xl flex items-center justify-center mb-5 text-indigo-600 dark:text-indigo-400 group-hover:bg-indigo-500 group-hover:text-white transition-colors duration-300"><i class="fas fa-users text-xl"></i></div>
+                    <h3 class="font-bold text-lg text-slate-800 dark:text-white mb-2">Employee Database</h3>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed flex-grow">Manage the workforce database, departments, and print physical ID badges.</p>
+                    <div class="mt-4 text-indigo-600 dark:text-indigo-400 text-xs font-semibold flex items-center opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0 duration-300">Open Module <i class="fas fa-arrow-right ml-1"></i></div>
+                </div>
+                
+                <div id="tile-access" onclick="openModule('Log.html')" class="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl shadow-sm hover:shadow-xl cursor-pointer border border-slate-200 dark:border-slate-800 group transition-all duration-300 hover:-translate-y-1.5 relative overflow-hidden flex flex-col h-full">
+                    <div class="h-14 w-14 bg-teal-50 dark:bg-teal-500/10 rounded-xl flex items-center justify-center mb-5 text-teal-600 dark:text-teal-400 group-hover:bg-teal-500 group-hover:text-white transition-colors duration-300"><i class="fas fa-shield-alt text-xl"></i></div>
+                    <h3 class="font-bold text-lg text-slate-800 dark:text-white mb-2">System Users</h3>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed flex-grow">Manage administrative accounts, operators, and assign role-based access.</p>
+                    <div class="mt-4 text-teal-600 dark:text-teal-400 text-xs font-semibold flex items-center opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0 duration-300">Open Module <i class="fas fa-arrow-right ml-1"></i></div>
+                </div>
+                
+                <div id="tile-analytics" onclick="openModule('report.html')" class="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-2xl shadow-sm hover:shadow-xl cursor-pointer border border-slate-200 dark:border-slate-800 group transition-all duration-300 hover:-translate-y-1.5 relative overflow-hidden flex flex-col h-full">
+                    <div class="h-14 w-14 bg-purple-50 dark:bg-purple-500/10 rounded-xl flex items-center justify-center mb-5 text-purple-600 dark:text-purple-400 group-hover:bg-purple-500 group-hover:text-white transition-colors duration-300"><i class="fas fa-file-invoice-dollar text-xl"></i></div>
+                    <h3 class="font-bold text-lg text-slate-800 dark:text-white mb-2">Financial Reports</h3>
+                    <p class="text-sm text-slate-500 dark:text-slate-400 leading-relaxed flex-grow">Extract detailed consumption data, LKR expenditure, and export audits.</p>
+                    <div class="mt-4 text-purple-600 dark:text-purple-400 text-xs font-semibold flex items-center opacity-0 group-hover:opacity-100 transition-opacity transform translate-y-2 group-hover:translate-y-0 duration-300">Open Module <i class="fas fa-arrow-right ml-1"></i></div>
+                </div>
+            </div>
+            
+        </div>
+
+    </main>
+
+</body>
+</html>

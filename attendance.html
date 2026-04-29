@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Enterprise | Attendance Terminal</title>
+    
+    <!-- Preconnect for faster loading speeds -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://www.gstatic.com">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: { slate: { 850: '#152033' } },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Google Fonts & FontAwesome -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- QR Code Libs for Camera Scanning -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        .scanner-input { caret-color: transparent; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        
+        /* Styled visible scrollbar for the page */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, getDoc, getDocs, query, where, limit, setDoc, deleteDoc, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Config
+        let firebaseConfig = {
+            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+            appId: import.meta.env.VITE_FIREBASE_APP_ID,
+            measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+        };
+
+        try {
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+            }
+        } catch(e) {
+            console.warn("Using local configuration.");
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Exact database tree path mapping
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'canteen-os-live';
+
+        // State
+        let todayTokens = [];
+        let WEEKLY_PRICES = { Monday: 80, Tuesday: 80, Wednesday: 80, Thursday: 80, Friday: 80, Saturday: 80, Sunday: 80 };
+        let alcMealItems = {};
+        
+        const SYS_SESSION_KEY = `ent_sys_session_${appId}`;
+        let loggedInSysUser = null;
+        
+        // Scanning State
+        let scanMode = 'STD';
+        let html5QrcodeScanner = null;
+        let scanDebounceTimer = null;
+        let lastKeyTime = Date.now(); // For blocking manual typing
+
+        // Loading states to ensure all data arrives before rendering
+        let isSysUsersLoaded = false;
+        let isTokensLoaded = false;
+        let isPricesLoaded = false;
+        let isAlcLoaded = false;
+        let initialRenderDone = false;
+
+        document.documentElement.classList.add('dark');
+
+        window.showToast = (message, type = 'success') => {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-emerald-500 border-emerald-600' : type === 'error' ? 'bg-red-500 border-red-600' : 'bg-blue-600 border-blue-500';
+            const icon = type === 'success' ? 'fa-check-circle' : type === 'error' ? 'fa-exclamation-triangle' : 'fa-info-circle';
+            toast.className = `${colors} text-white px-4 py-3 rounded-xl shadow-lg border flex items-center gap-3 animate-fade-in text-sm font-bold mt-2`;
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0'; toast.style.transform = 'translateY(10px)'; toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        };
+
+        // --- Visual Live Sync Progress Animation ---
+        window.syncAnimating = false;
+        function triggerSyncAnimation() {
+            const el = document.getElementById('sync-percent');
+            const bar = document.getElementById('sync-progress-bar');
+            const indicator = document.getElementById('sync-indicator');
+            
+            if (!el || !bar || !indicator) return;
+            if (!indicator.classList.contains('hidden') && window.syncAnimating) return;
+            
+            indicator.classList.remove('hidden');
+            indicator.classList.add('flex');
+            window.syncAnimating = true;
+            
+            let p = 0;
+            el.textContent = '0%';
+            bar.style.width = '0%';
+            
+            clearInterval(window.syncInterval);
+            window.syncInterval = setInterval(() => {
+                p += Math.floor(Math.random() * 30) + 15; 
+                if (p >= 100) {
+                    p = 100;
+                    clearInterval(window.syncInterval);
+                    setTimeout(() => {
+                        indicator.classList.add('hidden');
+                        indicator.classList.remove('flex');
+                        window.syncAnimating = false;
+                    }, 800); 
+                }
+                el.textContent = p + '%';
+                bar.style.width = p + '%';
+            }, 30);
+        }
+
+        // UI Modal for scanning feedback
+        window.showScanResultModal = (title, message, type) => {
+            const modal = document.getElementById('result-modal');
+            const iconEl = document.getElementById('res-icon');
+            const bgEl = document.getElementById('res-bg');
+            document.getElementById('res-title').textContent = title;
+            document.getElementById('res-msg').textContent = message;
+            
+            iconEl.classList.remove('hidden');
+            if (type === 'success') { iconEl.className = "fas fa-check-circle text-6xl text-white mb-4 drop-shadow-md"; }
+            else if (type === 'error') { iconEl.className = "fas fa-times-circle text-6xl text-white mb-4 drop-shadow-md"; }
+            else { iconEl.className = "fas fa-exclamation-circle text-6xl text-white mb-4 drop-shadow-md animate-pulse"; }
+            
+            modal.classList.remove('hidden');
+            if (type === 'success') { bgEl.className = "bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
+            else if (type === 'error') { bgEl.className = "bg-gradient-to-br from-red-500 to-red-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
+            else { bgEl.className = "bg-gradient-to-br from-blue-500 to-blue-600 rounded-t-2xl p-8 text-center relative overflow-hidden"; }
+            
+            if(title !== 'VERIFYING...') {
+                setTimeout(() => modal.classList.add('hidden'), 1200);
+            }
+        };
+
+        function getTodayStr() { return new Date().toISOString().split('T')[0]; }
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        window.goToDashboard = () => {
+            window.location.href = 'index.html';
+        };
+
+        function checkDataLoaded() {
+            if (isSysUsersLoaded && isTokensLoaded && isPricesLoaded && isAlcLoaded) {
+                window.renderLedger();
+                
+                if (!initialRenderDone) {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-attendance').classList.remove('hidden');
+                    setTimeout(() => {
+                        const scanner = document.getElementById('attendance-scanner');
+                        if(scanner) scanner.focus();
+                    }, 100);
+                    initialRenderDone = true;
+                }
+            }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                const sessionStr = localStorage.getItem(SYS_SESSION_KEY);
+                if (sessionStr) {
+                    loggedInSysUser = JSON.parse(sessionStr);
+                    
+                    // Show loader while connecting rapidly
+                    document.getElementById('view-loading').classList.remove('hidden');
+                    document.getElementById('view-attendance').classList.add('hidden');
+                    
+                    loadData();
+                } else {
+                    document.getElementById('view-loading').classList.add('hidden');
+                    document.getElementById('view-unauthorized').classList.remove('hidden');
+                }
+            }
+        });
+
+        initAuth();
+
+        const loadData = () => {
+            if (!auth.currentUser) return;
+            const todayStr = getTodayStr();
+
+            // 1. Single Point User Check (Massively boosts speed vs downloading all users)
+            if (loggedInSysUser && loggedInSysUser.username !== 'ADMIN') {
+                const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_users', loggedInSysUser.username);
+                onSnapshot(userRef, (docSnap) => {
+                    if (!docSnap.exists() || docSnap.data().status !== 'ACTIVE') {
+                        window.location.href = 'index.html';
+                    }
+                    isSysUsersLoaded = true; checkDataLoaded();
+                }, (err) => console.error("System User fetch error:", err));
+            } else {
+                isSysUsersLoaded = true; checkDataLoaded();
+            }
+
+            // 2. Load Settings (Prices)
+            onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'meal_prices'), (docSnap) => {
+                if (docSnap.exists() && docSnap.data().prices) {
+                    Object.assign(WEEKLY_PRICES, docSnap.data().prices);
+                }
+                isPricesLoaded = true; checkDataLoaded();
+            }, (err) => console.error("Prices fetch error:", err));
+
+            // 3. Fetch ALC Settings
+            onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen'), (docSnap) => {
+                if (docSnap.exists() && docSnap.data().alcMealItems) {
+                    alcMealItems = docSnap.data().alcMealItems;
+                    updateAlcDropdown();
+                }
+                isAlcLoaded = true; checkDataLoaded();
+            }, (err) => console.error("ALC settings fetch error:", err));
+
+            // 4. Load ONLY Today's Tokens (Cuts download size by 99.9%)
+            const qTokens = query(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), where('issuedDate', '==', todayStr));
+            onSnapshot(qTokens, (snap) => {
+                todayTokens = [];
+                snap.forEach(doc => {
+                    todayTokens.push({ id: doc.id, ...doc.data() });
+                });
+                
+                isTokensLoaded = true;
+                checkDataLoaded();
+                
+                if (initialRenderDone) {
+                    window.renderLedger();
+                    triggerSyncAnimation(); // Fire UI feedback that tokens updated
+                }
+            }, (err) => {
+                console.error("Tokens fetch error:", err);
+                showToast("Failed to sync tokens.", "error");
+            });
+            
+            // NOTE: Employees collection is intentionally NOT loaded here to achieve zero-lag boot times.
+            // Employee data is fetched on-the-fly dynamically during the exact moment of scanning.
+        };
+
+        function updateAlcDropdown() {
+            const select = document.getElementById('alc-meal-select');
+            if (!select) return;
+            select.innerHTML = '<option value="" disabled selected>-- Select ALC Meal Variety --</option>';
+            Object.entries(alcMealItems).sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, cost]) => {
+                select.innerHTML += `<option value="${name}">${name} (LKR ${parseFloat(cost).toFixed(2)})</option>`;
+            });
+        }
+
+        window.switchScanMode = (mode) => {
+            scanMode = mode;
+            const btnStd = document.getElementById('btn-mode-std');
+            const btnAlc = document.getElementById('btn-mode-alc');
+            const dropdownContainer = document.getElementById('alc-dropdown-container');
+            const scannerWrapper = document.getElementById('scanner-wrapper');
+            const input = document.getElementById('attendance-scanner');
+            const icon = document.getElementById('scanner-input-icon');
+            const helper = document.getElementById('scanner-helper-text');
+
+            if (mode === 'STD') {
+                btnStd.className = "px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-blue-600 text-white shadow-md flex items-center gap-2";
+                btnAlc.className = "px-6 py-2.5 rounded-lg text-sm font-bold transition-all text-slate-400 hover:text-slate-200 flex items-center gap-2";
+                
+                dropdownContainer.classList.add('hidden');
+                scannerWrapper.classList.remove('hidden'); 
+                
+                input.classList.remove('border-indigo-500/60', 'focus:border-indigo-500', 'focus:ring-indigo-500/20', 'shadow-[0_0_15px_rgba(99,102,241,0.15)]');
+                input.classList.add('border-blue-500/60', 'focus:border-blue-500', 'focus:ring-blue-500/20', 'shadow-[0_0_15px_rgba(59,130,246,0.15)]');
+                icon.className = "fas fa-qrcode text-blue-500 text-xl md:text-2xl transition-colors";
+                if(helper) helper.innerHTML = '<i class="fas fa-keyboard mr-1"></i> Automatic scanner input mode active...';
+                
+                setTimeout(() => document.getElementById('attendance-scanner').focus(), 100);
+            } else {
+                btnAlc.className = "px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-indigo-600 text-white shadow-md flex items-center gap-2";
+                btnStd.className = "px-6 py-2.5 rounded-lg text-sm font-bold transition-all text-slate-400 hover:text-slate-200 flex items-center gap-2";
+                
+                dropdownContainer.classList.remove('hidden');
+                document.getElementById('alc-meal-select').value = ""; 
+                scannerWrapper.classList.add('hidden'); 
+                
+                input.classList.remove('border-blue-500/60', 'focus:border-blue-500', 'focus:ring-blue-500/20', 'shadow-[0_0_15px_rgba(59,130,246,0.15)]');
+                input.classList.add('border-indigo-500/60', 'focus:border-indigo-500', 'focus:ring-indigo-500/20', 'shadow-[0_0_15px_rgba(99,102,241,0.15)]');
+                icon.className = "fas fa-qrcode text-indigo-500 text-xl md:text-2xl transition-colors";
+                if(helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Select meal to activate scanner';
+            }
+        };
+
+        window.handleAlcSelection = () => {
+            const val = document.getElementById('alc-meal-select').value;
+            const scannerWrapper = document.getElementById('scanner-wrapper');
+            const helper = document.getElementById('scanner-helper-text');
+            
+            if (val) {
+                scannerWrapper.classList.remove('hidden');
+                if(helper) helper.innerHTML = '<i class="fas fa-check-circle mr-1 text-indigo-400"></i> Ready for ALC scan';
+                setTimeout(() => document.getElementById('attendance-scanner').focus(), 100);
+            } else {
+                scannerWrapper.classList.add('hidden');
+                if(helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Select meal to activate scanner';
+            }
+        };
+
+        window.renderLedger = () => {
+            const listEl = document.getElementById('attendance-list');
+            const term = (document.getElementById('attendance-search')?.value || '').toLowerCase();
+            
+            const role = loggedInSysUser?.role || 'USER';
+            const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
+
+            // Metrics - Token count logic matching UI
+            document.getElementById('stat-cleared-emp').innerText = todayTokens.length;
+
+            // Site Tally
+            const siteCounts = {};
+            todayTokens.forEach(t => { 
+                const siteName = t.site && t.site !== '-' ? t.site : 'Unassigned Site';
+                siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
+            });
+
+            let siteHtml = '';
+            Object.entries(siteCounts).sort((a,b) => b[1] - a[1]).forEach(([site, count]) => {
+                siteHtml += `<div class="bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-xl flex items-center gap-3 shadow-sm shrink-0 mb-2">
+                                <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">${site}</span>
+                                <span class="bg-blue-500/20 text-blue-400 font-black px-2 py-0.5 rounded-lg text-sm">${count}</span>
+                             </div>`;
+            });
+            if (todayTokens.length === 0) {
+                siteHtml = `<div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-4 py-2 border border-slate-800 rounded-xl bg-slate-800/30 w-full"><i class="fas fa-info-circle mr-2"></i> No scans recorded yet today</div>`;
+            }
+            const siteContainer = document.getElementById('site-wise-container');
+            if (siteContainer) siteContainer.innerHTML = siteHtml;
+
+            // Render Scanned (Issued) Ledger List
+            let html = '';
+            
+            let filteredTokens = todayTokens.filter(t => {
+                if (!term) return true;
+                const tId = String(t.empId || '').toLowerCase();
+                const tName = String(t.empName || '').toLowerCase();
+                const tDept = String(t.dept || '').toLowerCase();
+                return tName.includes(term) || tId.includes(term) || tDept.includes(term);
+            });
+
+            // Sort: Latest scans at the top
+            filteredTokens.sort((a, b) => {
+                const timeA = a.issuedAt?.seconds || 0;
+                const timeB = b.issuedAt?.seconds || 0;
+                return timeB - timeA;
+            });
+
+            filteredTokens.forEach(log => {
+                const initial = String(log.empName || '?').charAt(0).toUpperCase();
+                const mealLabel = log.mealName ? `<span class="text-[9px] uppercase font-bold text-indigo-400 tracking-wider bg-indigo-500/10 px-2 py-0.5 rounded ml-2 border border-indigo-500/20">${log.mealName}</span>` : '';
+                const displayDept = log.dept || '-';
+                const timeStr = log.issuedAt ? new Date(log.issuedAt.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Just now';
+
+                html += `
+                    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-2xl border bg-blue-900/10 border-blue-900/40 hover:shadow-lg transition-all duration-300 mb-3">
+                        <div class="flex items-center gap-4 shrink-0 overflow-hidden w-full sm:w-auto mb-3 sm:mb-0">
+                            <div class="w-12 h-12 rounded-full shrink-0 bg-blue-900/30 text-blue-400 flex items-center justify-center font-bold text-lg shadow-inner">
+                                ${initial}
+                            </div>
+                            <div class="min-w-0">
+                                <h4 class="font-bold text-white text-base truncate">${log.empName || 'Unknown'}</h4>
+                                <div class="text-xs text-slate-400 flex items-center mt-1 flex-wrap gap-2">
+                                    <span class="font-mono bg-slate-700 px-1.5 py-0.5 rounded border border-slate-600 text-slate-200">${log.empId || '-'}</span>
+                                    <span class="truncate">${displayDept}</span>
+                                    <span class="text-blue-500 ml-1"><i class="far fa-clock"></i> ${timeStr}</span>
+                                    ${mealLabel}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="shrink-0 w-full sm:w-auto sm:pl-2 flex justify-end">
+                            <div class="flex items-center gap-2">
+                                <div class="flex items-center gap-2 text-emerald-400 font-extrabold text-sm bg-emerald-900/30 px-3 py-2 rounded-xl border border-emerald-800/50 shadow-sm">
+                                    <i class="fas fa-check-circle"></i> <span>Token Issued</span>
+                                </div>
+                                ${isAdmin ? `
+                                <button onclick="reviseAttendance('${log.id}', '${String(log.empName || '').replace(/'/g, "\\'")}', '${log.status}')" class="text-slate-400 hover:text-red-400 bg-slate-800 hover:bg-red-900/40 w-9 h-9 flex items-center justify-center rounded-xl transition-all shadow-sm border border-slate-700 hover:border-red-800/50" title="Revoke Attendance (Admin Only)">
+                                    <i class="fas fa-undo"></i>
+                                </button>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            if (filteredTokens.length === 0) {
+                html = `<div class="text-center py-16 text-slate-400 flex flex-col items-center"><i class="fas fa-search mb-4 text-4xl opacity-50"></i><p class="font-medium">No issued tokens match criteria.</p></div>`;
+            }
+
+            listEl.innerHTML = html;
+        };
+
+        window.filterAttendance = () => window.renderLedger();
+
+        // --------------------------------------------------------------------
+        // SCANNER LOGIC (Speed Trap & Dynamic User Fetch)
+        // --------------------------------------------------------------------
+        window.executeScan = async (val) => {
+            if (!val || !auth.currentUser) return;
+            
+            showScanResultModal('VERIFYING...', 'Processing...', 'info');
+
+            const todayStr = getTodayStr();
+            const alreadyMarked = todayTokens.find(t => t.empId === val || t.id === val);
+
+            if (alreadyMarked) {
+                return showScanResultModal('ALREADY ACTIVE', `${alreadyMarked.empName} has already accessed.`, 'warning');
+            }
+
+            // DYNAMIC FETCH: Pull the specific user directly from Firebase instead of holding 5000 users in memory
+            let emp = null;
+            try {
+                // Try direct doc ID lookup first for speed
+                const empRef = doc(db, 'artifacts', appId, 'public', 'data', 'employees', val);
+                const empSnap = await getDoc(empRef);
+                if (empSnap.exists()) {
+                    emp = { id: empSnap.id, ...empSnap.data() };
+                } else {
+                    // Fallback query by empId field
+                    const empQ = query(collection(db, 'artifacts', appId, 'public', 'data', 'employees'), where('empId', '==', val), limit(1));
+                    const qs = await getDocs(empQ);
+                    if (!qs.empty) {
+                        emp = { id: qs.docs[0].id, ...qs.docs[0].data() };
+                    }
+                }
+            } catch (err) {
+                console.error("Employee Query Error: ", err);
+                window.showToast("Network Error: Verification taking too long.", "error");
+                document.getElementById('result-modal').classList.add('hidden');
+                return;
+            }
+
+            if (!emp) {
+                return showScanResultModal('ACCESS DENIED', 'Invalid Terminal ID', 'error');
+            }
+
+            const pId = emp.id || emp.empId; 
+            const company = String(emp.companyName || emp.company || '').toUpperCase();
+            const isAlcEmp = company.includes('ALC');
+
+            // --- Enforce Strict ALC Rules ---
+            if (scanMode === 'ALC' && !isAlcEmp) {
+                return showScanResultModal('MODE CONFLICT', 'Standard personnel must use Standard Check-in.', 'warning');
+            }
+            if (scanMode === 'STD' && isAlcEmp) {
+                return showScanResultModal('MODE CONFLICT', 'ALC personnel require meal selection. Switch to ALC Menu.', 'warning');
+            }
+
+            let mealName = null;
+            let appliedCost = 0;
+
+            if (scanMode === 'ALC') {
+                mealName = document.getElementById('alc-meal-select')?.value;
+                if (!mealName) return showScanResultModal('MISSING SELECTION', 'Please select an ALC meal variety.', 'warning');
+                appliedCost = parseFloat(alcMealItems[mealName]) || 0;
+            } else {
+                const todayName = new Date().toLocaleDateString('en-US', {weekday: 'long'});
+                appliedCost = parseFloat(WEEKLY_PRICES[todayName]) || 80;
+            }
+
+            try {
+                const payload = {
+                    tokenString: `TKN-${Math.floor(Math.random()*10000)}`,
+                    empId: pId,
+                    empName: emp.name,
+                    dept: emp.dept || emp.department || '',
+                    company: emp.companyName || emp.company || '',
+                    account: emp.accountName || emp.account || '',
+                    site: emp.site || '-',
+                    issuedDate: todayStr,
+                    date: todayStr, 
+                    status: 'ISSUED',
+                    mealRedeemed: false,
+                    issuedAt: serverTimestamp(),
+                    markedAt: serverTimestamp(),
+                    issuedBy: auth.currentUser.uid,
+                    issuedBySysUser: loggedInSysUser?.username || 'SYSTEM',
+                    markedBy: loggedInSysUser?.username || 'SYSTEM',
+                    costs: { total: appliedCost }
+                };
+
+                if (scanMode === 'ALC' && mealName) {
+                    payload.mealName = mealName;
+                    payload.costApplied = appliedCost;
+                }
+
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'tokens'), payload);
+                
+                if (scanMode === 'ALC') {
+                    const alcSelect = document.getElementById('alc-meal-select');
+                    if (alcSelect) alcSelect.value = "";
+                    const scannerWrapper = document.getElementById('scanner-wrapper');
+                    if (scannerWrapper) scannerWrapper.classList.add('hidden');
+                    const helper = document.getElementById('scanner-helper-text');
+                    if (helper) helper.innerHTML = '<i class="fas fa-hand-pointer mr-1"></i> Ensure meal is selected before scanning';
+                }
+                
+                const mealMsg = mealName ? `\nSelected: ${mealName}` : '';
+                showScanResultModal('ENTRY APPROVED', `${emp.name}${mealMsg}`, 'success');
+            } catch (e) {
+                console.error("Error:", e);
+                showScanResultModal('SYSTEM FAULT', 'Failed to record entry.', 'error');
+            }
+        };
+
+        // --- SPEED TRAP: Block Human Typing, Only Allow Fast Scanner Input ---
+        window.handleScannerInput = (event) => {
+            const currentTime = Date.now();
+            
+            // If it has been more than 60ms since the last keypress (and it's not the Enter key)
+            // It means a human is typing manually. We instantly clear the field.
+            if (currentTime - lastKeyTime > 60 && event.key !== 'Enter') {
+                event.target.value = '';
+            }
+            lastKeyTime = currentTime;
+
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
+                
+                const val = event.target.value.trim().toUpperCase();
+                if (val.length >= 2) executeScan(val);
+                
+                event.target.value = ''; 
+            }
+        };
+        
+        window.handleAutoScan = (event) => {
+            if(scanDebounceTimer) clearTimeout(scanDebounceTimer);
+            scanDebounceTimer = setTimeout(() => {
+                const val = event.target.value.trim().toUpperCase();
+                if (val.length >= 2) { 
+                    executeScan(val);
+                    event.target.value = ''; 
+                }
+            }, 200); // 200ms debounce for scanners that don't send Enter key
+        };
+
+        window.keepFocus = (elementId) => {
+            setTimeout(() => {
+                const el = document.getElementById(elementId);
+                if (!el) return;
+                const isAttendanceView = !document.getElementById('view-attendance').classList.contains('hidden');
+                
+                const activeEl = document.activeElement;
+                const activeTag = activeEl ? activeEl.tagName.toLowerCase() : '';
+                
+                // Do not steal focus if user is actively searching or using dropdown
+                if ((activeTag === 'input' || activeTag === 'select') && activeEl.id !== elementId) return; 
+
+                const isCameraActive = !document.getElementById('webcam-modal').classList.contains('hidden');
+
+                if (isAttendanceView && !isCameraActive) {
+                    if (document.activeElement !== el) {
+                        el.focus({ preventScroll: true });
+                    }
+                }
+            }, 100);
+        };
+
+        window.startWebcamScanner = () => {
+            document.getElementById('webcam-modal').classList.remove('hidden');
+            if (!html5QrcodeScanner) html5QrcodeScanner = new Html5Qrcode("reader");
+            html5QrcodeScanner.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } },
+                (decodedText) => { 
+                    stopWebcamScanner(); 
+                    executeScan(decodedText.trim().toUpperCase()); 
+                },
+                () => {}
+            ).catch(err => { 
+                showToast("Camera access restricted or unavailable", "error"); 
+                document.getElementById('webcam-modal').classList.add('hidden'); 
+            });
+        };
+        
+        window.stopWebcamScanner = () => {
+            document.getElementById('webcam-modal').classList.add('hidden');
+            if(html5QrcodeScanner) html5QrcodeScanner.stop().catch(()=>{});
+            document.getElementById('attendance-scanner').focus();
+        };
+
+        window.reviseAttendance = async (tokenId, empName, status) => {
+            if (!auth.currentUser || !loggedInSysUser) return;
+            
+            const role = loggedInSysUser?.role || 'USER';
+            const isAdmin = role === 'ADMIN' || loggedInSysUser?.username === 'ADMIN';
+            
+            if (!isAdmin) {
+                window.showToast(`Unauthorized: Only Administrators can reverse scans.`, 'error');
+                return;
+            }
+
+            if (status === 'CONSUMED') {
+                window.showToast(`Cannot revise: ${empName} has already redeemed their meal.`, 'error');
+                return;
+            }
+
+            if(!confirm(`Revoke token for ${empName}?`)) return;
+
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'tokens', tokenId);
+            try {
+                await deleteDoc(ref);
+                window.showToast(`Token for ${empName} has been revoked.`, 'success');
+            } catch (e) {
+                console.error("Error:", e);
+                window.showToast("System fault: Failed to revoke token.", "error");
+            }
+        };
+    </script>
+</head>
+<body class="bg-[#0B1120] text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500" onclick="keepFocus('attendance-scanner')">
+
+    <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
+
+    <!-- Navigation -->
+    <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800 shrink-0">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="goToDashboard()" class="hover:bg-slate-800 p-2 rounded-lg text-slate-300 transition-colors bg-slate-800/50 shadow-sm border border-slate-700/50">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="bg-blue-600 rounded-lg w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(37,99,235,0.4)]">
+                    <i class="fas fa-user-check text-white text-lg"></i>
+                </div>
+                <span class="font-extrabold text-2xl tracking-tight text-white hidden sm:block">Attendance<span class="text-blue-500">Terminal</span></span>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <!-- Auto-Sync Loading Percentage Indicator -->
+                <div id="sync-indicator" class="hidden flex-col items-end gap-1.5 bg-blue-500/10 border border-blue-500/20 px-4 py-2 rounded-xl">
+                    <div class="flex items-center text-[9px] uppercase tracking-widest text-blue-400 font-bold">
+                        <i class="fas fa-satellite-dish animate-pulse mr-2"></i> Syncing <span id="sync-percent" class="ml-2 w-6 text-right text-blue-300 font-mono">0%</span>
+                    </div>
+                    <div class="w-24 h-1 bg-slate-800/50 rounded-full overflow-hidden shadow-inner border border-slate-700/50">
+                        <div id="sync-progress-bar" class="h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all duration-75 ease-out w-0 shadow-[0_0_8px_rgba(59,130,246,0.6)]"></div>
+                    </div>
+                </div>
+                
+                <div class="hidden md:flex text-xs font-bold uppercase bg-slate-800 border border-slate-700 px-4 py-2.5 rounded-lg text-emerald-400 tracking-wider items-center">
+                    <div class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse mr-2"></div> LIVE SYNC
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-1 flex flex-col relative">
+        
+        <!-- LOADING VIEW -->
+        <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
+            <div class="relative flex items-center justify-center mb-6">
+                <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-blue-500 opacity-20"></div>
+                <div class="relative inline-flex rounded-full h-16 w-16 bg-gradient-to-br from-blue-500 to-blue-700 shadow-lg shadow-blue-500/50 flex items-center justify-center text-white p-2.5 overflow-hidden">
+                    <i class="fas fa-user-check text-white text-3xl"></i>
+                </div>
+            </div>
+            <div class="text-center space-y-2">
+                <h2 class="text-white font-extrabold text-3xl tracking-tight">Attendance<span class="text-blue-500">Terminal</span></h2>
+            </div>
+        </div>
+
+        <!-- UNAUTHORIZED VIEW -->
+        <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
+            <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
+                <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
+                <i class="fas fa-shield-alt text-6xl text-red-500 mb-6 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)]"></i>
+                <h2 class="text-2xl font-extrabold text-white mb-3">Access Denied</h2>
+                <p class="text-slate-400 text-sm mb-8 leading-relaxed font-medium">Valid session token missing. Please authenticate through the primary Enterprise Dashboard to access this terminal.</p>
+                <button onclick="goToDashboard()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl border border-slate-700 transition-colors text-sm tracking-wider uppercase shadow-sm">
+                    Return to Dashboard
+                </button>
+            </div>
+        </div>
+
+        <!-- MAIN ATTENDANCE VIEW -->
+        <div id="view-attendance" class="hidden container mx-auto px-4 py-6 animate-fade-in flex-1 flex flex-col">
+            
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 shrink-0 gap-4">
+                <div>
+                    <h2 class="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
+                        Terminal Node Alpha
+                    </h2>
+                    <p class="text-slate-400 mt-2 font-medium">Verify employee presence and assign specific meal configurations.</p>
+                </div>
+            </div>
+
+            <!-- SCANNER MODULE -->
+            <div class="mb-6 w-full max-w-5xl mx-auto shrink-0">
+                <div class="flex justify-center mb-6">
+                    <div class="bg-slate-800/80 p-1.5 rounded-xl flex gap-1 border border-slate-700 shadow-sm backdrop-blur-md">
+                        <button id="btn-mode-std" onclick="switchScanMode('STD')" class="px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-blue-600 text-white shadow-md flex items-center gap-2">
+                            <i class="fas fa-user-check"></i> Standard Check-in
+                        </button>
+                        <button id="btn-mode-alc" onclick="switchScanMode('ALC')" class="px-6 py-2.5 rounded-lg text-sm font-bold transition-all text-slate-400 hover:text-slate-200 flex items-center gap-2">
+                            <i class="fas fa-fish"></i> ALC Meal Assign
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-[#0f172a]/60 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-6 lg:p-10 flex flex-col items-center justify-center min-h-[220px]">
+                    
+                    <!-- ALC Selection Dropdown -->
+                    <div id="alc-dropdown-container" class="w-full max-w-2xl mb-6 hidden animate-fade-in">
+                        <div class="relative">
+                            <select id="alc-meal-select" class="w-full border border-slate-700 bg-[#1A2234] rounded-xl px-5 py-4 text-slate-200 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 outline-none transition font-bold appearance-none cursor-pointer shadow-inner" onchange="handleAlcSelection()">
+                                <option value="" disabled selected>-- Select ALC Meal Variety --</option>
+                            </select>
+                            <div class="absolute right-5 top-5 pointer-events-none text-slate-400"><i class="fas fa-chevron-down"></i></div>
+                        </div>
+                    </div>
+
+                    <div id="scanner-wrapper" class="w-full flex flex-col items-center animate-fade-in">
+                        <div id="scanner-container" class="w-full relative max-w-3xl">
+                            <div class="absolute inset-y-0 left-6 sm:left-10 flex items-center pointer-events-none">
+                                <i id="scanner-input-icon" class="fas fa-qrcode text-blue-500 text-xl md:text-2xl transition-colors"></i>
+                            </div>
+                            <!-- 'pointer-events-none', 'select-none', and 'onpaste' prevent human typing and copying -->
+                            <input type="text" id="attendance-scanner" inputmode="none" placeholder="SCAN PERSONNEL QR . . ." 
+                                class="w-full pl-16 sm:pl-20 pr-6 py-5 sm:py-6 border-2 border-blue-500/60 rounded-[1.5rem] bg-slate-900/50 focus:bg-slate-900 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/20 font-mono text-center text-lg sm:text-2xl tracking-[0.15em] sm:tracking-[0.25em] outline-none transition scanner-input shadow-[0_0_15px_rgba(59,130,246,0.15)] text-white pointer-events-none select-none" 
+                                onkeydown="handleScannerInput(event)" oninput="handleAutoScan(event)" onblur="keepFocus('attendance-scanner')" onpaste="return false;" ondrop="return false;" autocomplete="off">
+                        </div>
+                        
+                        <button onclick="startWebcamScanner()" class="mt-5 w-full max-w-sm flex items-center justify-center text-blue-400 hover:text-blue-300 font-bold text-sm bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 px-6 py-3 rounded-xl transition shadow-sm">
+                            <i class="fas fa-camera text-lg mr-2"></i> Launch Optical Scanner
+                        </button>
+                    </div>
+                    <p id="scanner-helper-text" class="text-[10px] text-slate-500 font-bold uppercase tracking-widest mt-4"><i class="fas fa-keyboard mr-1"></i> Automatic scanner input mode active...</p>
+                </div>
+            </div>
+
+            <!-- Single Focus Metric -->
+            <div class="mb-6 shrink-0 max-w-md">
+                <div class="bg-slate-800 p-5 rounded-2xl border border-emerald-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
+                    <div class="absolute -right-4 -top-4 w-20 h-20 bg-emerald-500/10 rounded-full pointer-events-none"></div>
+                    <div>
+                        <span class="text-emerald-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-1 block">Tokens Issued Today</span>
+                        <span id="stat-cleared-emp" class="text-4xl font-black text-emerald-400 drop-shadow-sm">0</span>
+                    </div>
+                    <div class="w-12 h-12 bg-emerald-900/50 rounded-full flex items-center justify-center text-emerald-500 shadow-inner"><i class="fas fa-clipboard-check text-xl"></i></div>
+                </div>
+            </div>
+
+            <!-- Site-wise Scanned Counts -->
+            <div class="mb-6 shrink-0">
+                <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2"><i class="fas fa-map-marker-alt mr-1"></i> Site-Wise Scan Distribution</h4>
+                <div id="site-wise-container" class="flex flex-wrap gap-2">
+                    <!-- Dynamic Site Counts Injected Here -->
+                </div>
+            </div>
+
+            <!-- List Area Header -->
+            <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4 mt-6">
+                <h3 class="text-base font-bold text-white"><i class="fas fa-list-ul mr-2 text-slate-400"></i> Issued Tokens Ledger</h3>
+                <div class="w-full md:w-80">
+                    <div class="bg-slate-800 px-4 py-2.5 rounded-xl border border-slate-700 shadow-sm flex items-center gap-3 w-full transition-shadow focus-within:ring-2 focus-within:ring-blue-500/50">
+                        <i class="fas fa-search text-slate-400"></i>
+                        <input type="text" id="attendance-search" onkeyup="filterAttendance()" placeholder="Search Scanned Database..." class="bg-transparent border-none outline-none text-sm w-full text-white placeholder-slate-400 font-medium">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Expanding List Area (Page scrolling enabled) -->
+            <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col flex-1 min-h-[400px]">
+                <div class="p-4 flex-grow" id="attendance-list">
+                    <!-- Data populated reactively via JavaScript -->
+                </div>
+            </div>
+            
+        </div>
+    </main>
+
+    <!-- VERIFICATION RESULT MODAL -->
+    <div id="result-modal" class="fixed inset-0 hidden z-[70] flex items-end sm:items-center justify-center pointer-events-none p-4">
+        <div class="bg-slate-800 w-full max-w-sm rounded-3xl shadow-2xl pointer-events-auto transform transition-all scale-100 overflow-hidden border border-slate-700">
+            <div id="res-bg" class="rounded-t-3xl p-8 text-center flex flex-col items-center">
+                <i id="res-icon" class="text-6xl text-white mb-4 drop-shadow-md"></i>
+                <h2 id="res-title" class="text-2xl font-black text-white tracking-tight drop-shadow-sm"></h2>
+            </div>
+            <div class="p-8 text-center bg-slate-900/50">
+                <p id="res-msg" class="text-white font-bold text-xl leading-relaxed whitespace-pre-line"></p>
+                <button onclick="document.getElementById('result-modal').classList.add('hidden')" class="mt-8 w-full py-3.5 bg-slate-800 border border-slate-600 hover:bg-slate-700 text-white font-bold rounded-xl transition shadow-sm text-sm uppercase tracking-wider">Acknowledge</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- WEBCAM MODAL -->
+    <div id="webcam-modal" class="fixed inset-0 bg-[#0B1120]/95 hidden z-[80] flex flex-col items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-[#131B2B] rounded-3xl overflow-hidden w-full max-w-md relative shadow-2xl border border-slate-800">
+            <div class="bg-[#1F2937] text-white p-5 flex justify-between items-center border-b border-slate-700">
+                <span class="font-bold flex items-center text-sm uppercase tracking-wider"><i class="fas fa-video mr-3 text-blue-500"></i> Optical Feed Active</span>
+                <button onclick="stopWebcamScanner()" class="text-slate-400 hover:text-white bg-slate-800 hover:bg-red-500 rounded-lg p-2 transition"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="reader" class="w-full bg-[#0B1120] min-h-[350px]"></div>
+            <div class="p-5 text-center text-xs font-bold uppercase tracking-widest text-blue-400 bg-[#1F2937] border-t border-slate-700">Awaiting QR / Barcode Interface...</div>
+        </div>
+    </div>
+
+</body>
+</html>
