@@ -5,12 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Enterprise | Redemption Counter</title>
     
-    <!-- Preconnect for faster loading speeds -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preconnect" href="https://www.gstatic.com">
     
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -27,11 +25,9 @@
         }
     </script>
     
-    <!-- Google Fonts & FontAwesome -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-    <!-- QR Code Libs for Camera Scanning -->
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
     <style>
@@ -53,7 +49,6 @@
         ::-webkit-scrollbar-thumb:hover { background: #475569; }
     </style>
 
-    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -330,7 +325,7 @@
             });
             
             if (Object.keys(mealCounts).length === 0) {
-                breakdownHtml = `<div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-4 py-2 border border-slate-800 rounded-xl bg-slate-800/30 w-full"><i class="fas fa-info-circle mr-2"></i> No specific meals tracked today</div>`;
+                breakdownHtml = `<div class="text-xs font-bold text-slate-500 uppercase tracking-widest px-4 py-2 border border-slate-800 rounded-xl bg-slate-800/30 w-full"><i class="fas fa-info-circle mr-2"></i> No meal varieties tracked today</div>`;
             }
             const breakdownContainer = document.getElementById('meal-breakdown-container');
             if (breakdownContainer) breakdownContainer.innerHTML = breakdownHtml;
@@ -560,7 +555,6 @@
 
     <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
 
-    <!-- Navigation -->
     <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800 shrink-0">
         <div class="container mx-auto px-6 py-4 flex justify-between items-center">
             <div class="flex items-center gap-4">
@@ -574,7 +568,6 @@
             </div>
             
             <div class="flex items-center gap-4">
-                <!-- Auto-Sync Loading Percentage Indicator -->
                 <div id="sync-indicator" class="hidden flex-col items-end gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-4 py-2 rounded-xl">
                     <div class="flex items-center text-[9px] uppercase tracking-widest text-emerald-400 font-bold">
                         <i class="fas fa-satellite-dish animate-pulse mr-2"></i> Syncing <span id="sync-percent" class="ml-2 w-6 text-right text-emerald-300 font-mono">0%</span>
@@ -593,7 +586,6 @@
 
     <main class="flex-1 flex flex-col relative">
         
-        <!-- LOADING VIEW -->
         <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
             <div class="relative flex items-center justify-center mb-6">
                 <div class="absolute animate-ping inline-flex h-24 w-24 rounded-full bg-emerald-500 opacity-20"></div>
@@ -606,7 +598,6 @@
             </div>
         </div>
 
-        <!-- UNAUTHORIZED VIEW -->
         <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
             <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
                 <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
@@ -619,7 +610,6 @@
             </div>
         </div>
 
-        <!-- MAIN COUNTER VIEW -->
         <div id="view-counter" class="hidden container mx-auto px-4 py-6 animate-fade-in flex-1 flex flex-col">
             
             <div class="flex flex-col md:flex-row justify-between items-start md:items-end mb-6 shrink-0 gap-4">
@@ -631,7 +621,6 @@
                 </div>
             </div>
 
-            <!-- SCANNER MODULE -->
             <div class="mb-6 w-full max-w-4xl mx-auto shrink-0">
                 <div class="bg-[#0f172a]/60 backdrop-blur-sm rounded-[2rem] border border-slate-800 shadow-xl p-6 lg:p-10 flex flex-col items-center justify-center min-h-[220px]">
                     
@@ -653,9 +642,7 @@
                 </div>
             </div>
 
-            <!-- Single Focus Metric: Total Redeemed -->
             <div class="mb-6 shrink-0 max-w-4xl mx-auto w-full">
-                <!-- Total Redeemed Metric -->
                 <div class="bg-slate-800 p-5 rounded-2xl border border-emerald-900/40 shadow-sm flex items-center justify-between relative overflow-hidden">
                     <div class="absolute -right-4 -top-4 w-32 h-32 bg-emerald-500/10 rounded-full pointer-events-none"></div>
                     <div>
@@ -666,25 +653,20 @@
                 </div>
             </div>
 
-            <!-- NEW: Site-Wise Redeemed Distribution (Replica of uploaded image) -->
             <div class="mb-6 shrink-0 max-w-4xl mx-auto w-full mt-2">
                 <div class="flex items-center gap-2 mb-3 px-1 text-slate-400 font-bold text-[10px] tracking-widest uppercase">
                     <i class="fas fa-map-marker-alt"></i> <span>Site-Wise Redeemed Distribution</span>
                 </div>
                 <div id="site-distribution-container" class="flex flex-wrap gap-3">
-                    <!-- Dynamic Site Boxes Injected Here -->
-                </div>
+                    </div>
             </div>
 
-            <!-- ALC Meal Breakdown Tracker -->
             <div class="mb-6 shrink-0 max-w-4xl mx-auto w-full">
-                <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2"><i class="fas fa-chart-pie mr-1"></i> ALC Meal Breakdown Tracker</h4>
+                <h4 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2"><i class="fas fa-concierge-bell mr-1"></i> Global Meal Varieties Tracker</h4>
                 <div id="meal-breakdown-container" class="flex flex-wrap gap-2 justify-center sm:justify-start">
-                    <!-- Dynamic Breakdown Counts Injected Here -->
-                </div>
+                    </div>
             </div>
 
-            <!-- List Area Header -->
             <div class="flex flex-col md:flex-row justify-between items-center mb-3 shrink-0 gap-4 mt-6 max-w-4xl mx-auto w-full">
                 <h3 class="text-base font-bold text-white"><i class="fas fa-list-ul mr-2 text-slate-400"></i> Counter Ledger (Today)</h3>
                 <div class="w-full md:w-80">
@@ -695,17 +677,14 @@
                 </div>
             </div>
 
-            <!-- Expanding List Area (Page scrolling enabled) -->
             <div class="bg-slate-800/30 rounded-[2rem] border border-slate-700 shadow-inner flex flex-col flex-1 min-h-[400px] max-w-4xl mx-auto w-full">
                 <div class="p-4 flex-grow" id="canteen-list">
-                    <!-- Data populated reactively via JavaScript -->
-                </div>
+                    </div>
             </div>
             
         </div>
     </main>
 
-    <!-- VERIFICATION RESULT MODAL -->
     <div id="result-modal" class="fixed inset-0 hidden z-[70] flex items-end sm:items-center justify-center pointer-events-none p-4 backdrop-blur-sm bg-black/60 transition-opacity">
         <div class="bg-slate-800 w-full max-w-sm rounded-3xl shadow-2xl pointer-events-auto transform transition-all scale-100 overflow-hidden border border-slate-700 relative">
             <div id="res-bg" class="rounded-t-3xl p-8 text-center flex flex-col items-center relative overflow-hidden">
@@ -719,7 +698,6 @@
         </div>
     </div>
 
-    <!-- WEBCAM MODAL -->
     <div id="webcam-modal" class="fixed inset-0 bg-[#0B1120]/95 hidden z-[80] flex flex-col items-center justify-center p-4 backdrop-blur-sm">
         <div class="bg-[#131B2B] rounded-3xl overflow-hidden w-full max-w-md relative shadow-2xl border border-slate-800">
             <div class="bg-[#1F2937] text-white p-5 flex justify-between items-center border-b border-slate-700">
