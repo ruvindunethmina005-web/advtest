@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Enterprise | Personnel Roster</title>
     
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -22,11 +21,9 @@
         }
     </script>
     
-    <!-- Google Fonts & FontAwesome -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-    <!-- QR Code Libs (Print only) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
     <style>
@@ -70,14 +67,13 @@
         .dark ::-webkit-scrollbar-thumb { background: #475569; }
     </style>
 
-    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ============================================================
-        //  FIREBASE CONFIGURATION (Matched exactly to index 90.html)
+        //  FIREBASE CONFIGURATION
         // ============================================================
         const firebaseConfig = {
             apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -160,7 +156,6 @@
         initAuth();
 
         const loadData = () => {
-            // CRITICAL FIX: Ensure path targets 'employees' exactly as specified in index (90).html
             const pRef = collection(db, 'artifacts', appId, 'public', 'data', 'employees');
             onSnapshot(pRef, (snap) => {
                 personnelList = {};
@@ -198,8 +193,9 @@
             document.getElementById('emp-photo-preview').src = "";
             document.getElementById('photo-upload-input').value = "";
             
-            // Set Default Values to match index.html structures
+            // Set Default Values
             document.getElementById('new-acct-name').value = 'CTE';
+            document.getElementById('new-status').value = 'ACTIVE';
         }
 
         window.handlePhotoUpload = (e) => {
@@ -231,6 +227,12 @@
             const container = document.getElementById('staff-directory-list');
             container.innerHTML = '';
             
+            // Update total records display
+            const totalCountEl = document.getElementById('total-count-display');
+            if (totalCountEl) {
+                totalCountEl.innerText = Object.keys(personnelList).length;
+            }
+
             const searchInput = document.getElementById('staff-search-input');
             const searchVal = searchInput ? searchInput.value.trim().toLowerCase() : '';
             
@@ -288,7 +290,6 @@
             const empId = document.getElementById('new-emp-id').value.trim().toUpperCase();
             if (!empId) return showToast('ID required', 'error');
             
-            // Map strictly to index(90).html expected structure. Notice the `employees` collection
             const staffData = {
                 id: empId,
                 name: document.getElementById('new-emp-name').value.trim(),
@@ -296,14 +297,13 @@
                 site: document.getElementById('new-site-name').value.trim(),
                 accountName: document.getElementById('new-acct-name').value.trim() || 'CTE',
                 companyName: document.getElementById('new-comp-name').value.trim(),
-                status: 'ACTIVE', // Enforce active status on creation/update
+                status: document.getElementById('new-status').value || 'ACTIVE',
                 updatedAt: serverTimestamp()
             };
             
             if (currentPhotoBase64) staffData.photoData = currentPhotoBase64;
 
             try {
-                // Ensure write accesses the correct 'employees' path
                 await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId), staffData, { merge: true });
                 window.showToast(isEditing ? 'Profile Updated' : 'Profile Created', 'success');
                 resetStaffForm();
@@ -323,6 +323,7 @@
             document.getElementById('new-site-name').value = emp.site || '';
             document.getElementById('new-acct-name').value = emp.accountName || 'CTE';
             document.getElementById('new-comp-name').value = emp.companyName || '';
+            document.getElementById('new-status').value = emp.status || 'ACTIVE';
             
             const idField = document.getElementById('new-emp-id');
             idField.readOnly = true;
@@ -345,7 +346,6 @@
         window.deleteStaff = async (id) => {
             if(confirm(`Permanently delete record for ${id}?`)) {
                 try {
-                    // Ensure deletion targets the 'employees' collection
                     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', id));
                     window.showToast('Record Deleted', 'success');
                 } catch(e) {
@@ -354,7 +354,7 @@
             }
         };
 
-        // Custom Layout for Print matching Image Reference
+        // Custom Layout for Print
         window.showQrModal = (id, name, accountName) => {
             const printOverlay = document.getElementById('print-overlay');
             printOverlay.className = 'print-mode-single';
@@ -375,7 +375,6 @@
                 </div>
             `;
             
-            // Generate exact QR
             new QRCode(document.getElementById('single-qr-target'), { 
                 text: id, 
                 width: 140, 
@@ -385,18 +384,15 @@
                 correctLevel : QRCode.CorrectLevel.H
             });
 
-            // Trigger Browser Print
             setTimeout(() => window.print(), 500);
         };
     </script>
 </head>
 <body class="bg-[#0B1120] text-slate-100 font-sans min-h-screen flex flex-col transition-colors duration-500">
 
-    <!-- PRINT OVERLAY CONTAINER -->
     <div id="print-overlay"></div>
     <div id="toast-container" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-2"></div>
 
-    <!-- Navigation -->
     <nav class="bg-[#0B1120] text-white shadow-xl sticky top-0 z-40 border-b border-slate-800">
         <div class="container mx-auto px-6 py-4 flex justify-between items-center">
             <div class="flex items-center gap-4">
@@ -419,7 +415,6 @@
 
     <main class="flex-grow flex flex-col relative">
         
-        <!-- LOADING VIEW -->
         <div id="view-loading" class="fixed inset-0 z-[60] bg-[#0B1120] flex flex-col items-center justify-center transition-opacity duration-500">
             <div class="relative flex items-center justify-center">
                 <div class="absolute animate-ping inline-flex h-20 w-20 rounded-full bg-indigo-500 opacity-20"></div>
@@ -430,7 +425,6 @@
             </div>
         </div>
 
-        <!-- UNAUTHORIZED VIEW -->
         <div id="view-unauthorized" class="hidden absolute inset-0 z-[55] bg-[#0B1120] flex-col items-center justify-center text-center px-6 animate-fade-in">
             <div class="bg-[#131B2B] p-10 rounded-[2rem] border border-slate-800 shadow-2xl max-w-md w-full relative overflow-hidden">
                 <div class="absolute -top-20 -right-20 w-40 h-40 bg-red-500/10 rounded-full blur-3xl pointer-events-none"></div>
@@ -443,10 +437,8 @@
             </div>
         </div>
 
-        <!-- MAIN STAFF VIEW -->
         <div id="view-staff" class="hidden container mx-auto px-6 py-8 animate-fade-in flex-grow flex flex-col">
 
-            <!-- TABS -->
             <div class="flex justify-center mb-6 max-w-5xl mx-auto w-full mt-4">
                 <div class="bg-slate-800/80 p-1.5 rounded-xl flex gap-1 border border-slate-700 shadow-sm backdrop-blur-md w-max">
                     <button id="staff-btn-directory" onclick="switchStaffTab('directory')" class="staff-tab-btn px-6 py-2.5 rounded-lg text-sm font-bold transition-all bg-indigo-600 text-white shadow-md flex items-center gap-2">
@@ -458,12 +450,16 @@
                 </div>
             </div>
             
-            <!-- Directory Tab -->
             <div id="staff-tab-directory" class="staff-tab-content bg-[#131B2B] rounded-2xl shadow-sm border border-slate-800 flex-grow flex flex-col overflow-hidden max-w-5xl mx-auto w-full">
-                <div class="p-4 border-b border-slate-800 bg-[#131B2B]">
-                    <div class="relative">
+                <div class="p-4 border-b border-slate-800 bg-[#131B2B] flex flex-col sm:flex-row gap-4 items-center justify-between">
+                    <div class="relative w-full sm:w-2/3">
                         <span class="absolute inset-y-0 left-0 flex items-center pl-4 text-slate-500"><i class="fas fa-search"></i></span>
                         <input type="text" id="staff-search-input" onkeyup="renderStaffDirectory()" placeholder="Search ID, Name, or Department..." class="w-full pl-11 pr-4 py-3 border border-slate-700 rounded-xl text-sm bg-slate-900 text-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition shadow-inner font-medium">
+                    </div>
+                    <div class="bg-slate-800/50 border border-slate-700 px-5 py-2.5 rounded-xl flex items-center gap-3 shadow-inner w-full sm:w-auto justify-center">
+                        <i class="fas fa-users text-indigo-400"></i>
+                        <span class="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Total Personnel:</span>
+                        <span id="total-count-display" class="text-white font-black font-mono text-lg leading-none">0</span>
                     </div>
                 </div>
                 <div class="overflow-x-auto flex-grow h-[500px] hide-scroll">
@@ -483,7 +479,6 @@
                 </div>
             </div>
             
-            <!-- Create/Edit Tab (Matched to Image Reference) -->
             <div id="staff-tab-create" class="staff-tab-content hidden bg-[#131B2B] rounded-2xl shadow-sm border border-slate-800 p-8 max-w-5xl mx-auto w-full">
                 
                 <div class="text-xl font-bold text-white pb-6 flex items-center mb-6 border-b border-slate-800/50">
@@ -492,7 +487,6 @@
 
                 <form id="create-staff-form" class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6" onsubmit="event.preventDefault(); createStaffProfile();">
                     
-                    <!-- Exact matching of Photo upload box -->
                     <div class="md:col-span-2 bg-[#1A2234] p-6 rounded-xl border border-slate-700/50">
                         <label class="block text-[10px] font-bold text-slate-400 mb-3 uppercase tracking-widest">Biometric Photo Data (Optional)</label>
                         <div class="flex items-center space-x-4">
@@ -501,7 +495,6 @@
                         </div>
                     </div>
 
-                    <!-- Input Fields Exact Matching UI -->
                     <div>
                         <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Employee ID (QRcode Sync)</label>
                         <input type="text" id="new-emp-id" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium" required>
@@ -526,13 +519,20 @@
                         <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Account</label>
                         <input type="text" id="new-acct-name" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium" value="CTE">
                     </div>
-
-                    <!-- Hidden Status element that exists in index but missing from layout pic to match aesthetic -->
-                    <div class="md:col-span-2 hidden">
-                        <input type="hidden" id="new-status" value="ACTIVE">
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Current Status</label>
+                        <div class="relative">
+                            <select id="new-status" class="w-full border border-slate-700 rounded-lg px-4 py-3 bg-[#1A2234] text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition font-medium appearance-none cursor-pointer">
+                                <option value="ACTIVE">ACTIVE</option>
+                                <option value="INACTIVE">INACTIVE</option>
+                            </select>
+                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-400">
+                                <i class="fas fa-chevron-down text-xs"></i>
+                            </div>
+                        </div>
                     </div>
                     
-                    <div class="md:col-span-2 text-right mt-4">
+                    <div class="md:col-span-2 text-right mt-4 border-t border-slate-800/50 pt-6">
                         <button type="submit" class="bg-[#2563EB] text-white px-8 py-3 rounded-lg shadow-md shadow-blue-500/20 hover:bg-blue-600 font-bold transition transform active:scale-95 text-sm">Commit Personnel Record</button>
                     </div>
                 </form>
