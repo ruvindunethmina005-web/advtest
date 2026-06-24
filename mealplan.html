@@ -60,16 +60,25 @@
 
         // Firebase Config
         const appConfig = {
-            apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-            authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-            projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-            storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-            messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-            appId: import.meta.env.VITE_FIREBASE_APP_ID,
-            measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+            apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || "",
+            authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || "",
+            projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || "",
+            storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || "",
+            messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+            appId: import.meta.env?.VITE_FIREBASE_APP_ID || "",
+            measurementId: import.meta.env?.VITE_FIREBASE_MEASUREMENT_ID || ""
         };
 
-        const app = initializeApp(appConfig);
+        let firebaseConfig = appConfig;
+        try {
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+            }
+        } catch(e) {
+            console.warn("Using local configuration.");
+        }
+
+        const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         
@@ -82,6 +91,9 @@
 
         // Configuration State - Unified Meal Varieties
         let mealItems = {};
+        
+        // Editing State
+        let editingMealName = null;
 
         document.documentElement.classList.add('dark');
 
@@ -148,28 +160,43 @@
         // ==========================================
         //  GLOBAL MEAL VARIETIES MANAGEMENT (KDC & ALC)
         // ==========================================
-        window.addMealVariety = async () => {
-            const name = document.getElementById('new-meal-name').value.trim();
-            const cost = parseFloat(document.getElementById('new-meal-cost').value);
+        window.saveMealVariety = async () => {
+            const nameInput = document.getElementById('new-meal-name');
+            const costInput = document.getElementById('new-meal-cost');
+            const name = nameInput.value.trim();
+            const cost = parseFloat(costInput.value);
             
             if (!name) return window.showToast("Meal name is required.", "error");
             if (isNaN(cost) || cost < 0) return window.showToast("Valid meal cost is required.", "error");
 
-            const updatedItems = { ...mealItems, [name]: cost };
+            let updatedItems = { ...mealItems };
+
+            // If editing and the name changed, remove the old entry
+            if (editingMealName && editingMealName !== name) {
+                delete updatedItems[editingMealName];
+            }
+
+            updatedItems[name] = cost;
             const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen');
             
             try {
                 await setDoc(settingsRef, { mealItems: updatedItems }, { merge: true });
-                document.getElementById('new-meal-name').value = '';
-                document.getElementById('new-meal-cost').value = '';
-                window.showToast(`Added ${name} to Meal Varieties.`, "success");
+                resetForm();
+                window.showToast(editingMealName ? `Updated ${name}.` : `Added ${name} to Meal Varieties.`, "success");
             } catch (err) {
                 window.showToast("Failed to save meal variety.", "error");
+                console.error(err);
             }
         };
 
         window.removeMealVariety = async (name) => {
             if (!confirm(`Delete ${name} from Meal Varieties?`)) return;
+            
+            // If the item being deleted is currently being edited, reset the form
+            if (editingMealName === name) {
+                resetForm();
+            }
+
             const updatedItems = { ...mealItems };
             delete updatedItems[name];
             
@@ -179,7 +206,51 @@
                 window.showToast(`Removed ${name}.`, "success");
             } catch (err) {
                 window.showToast("Failed to remove meal variety.", "error");
+                console.error(err);
             }
+        };
+        
+        window.editMealVariety = (name, cost) => {
+            editingMealName = name;
+            
+            const nameInput = document.getElementById('new-meal-name');
+            const costInput = document.getElementById('new-meal-cost');
+            const actionBtn = document.getElementById('meal-action-btn');
+            const actionIcon = document.getElementById('meal-action-icon');
+            const cancelBtn = document.getElementById('cancel-edit-btn');
+            
+            nameInput.value = name;
+            costInput.value = cost;
+            
+            // Update button UI
+            actionBtn.classList.remove('bg-indigo-600', 'hover:bg-indigo-500');
+            actionBtn.classList.add('bg-emerald-600', 'hover:bg-emerald-500');
+            actionIcon.className = 'fas fa-check';
+            
+            cancelBtn.classList.remove('hidden');
+            
+            // Focus the cost input for quick updates
+            costInput.focus();
+        };
+
+        window.resetForm = () => {
+            editingMealName = null;
+            
+            const nameInput = document.getElementById('new-meal-name');
+            const costInput = document.getElementById('new-meal-cost');
+            const actionBtn = document.getElementById('meal-action-btn');
+            const actionIcon = document.getElementById('meal-action-icon');
+            const cancelBtn = document.getElementById('cancel-edit-btn');
+            
+            nameInput.value = '';
+            costInput.value = '';
+            
+            // Reset button UI
+            actionBtn.classList.add('bg-indigo-600', 'hover:bg-indigo-500');
+            actionBtn.classList.remove('bg-emerald-600', 'hover:bg-emerald-500');
+            actionIcon.className = 'fas fa-plus';
+            
+            cancelBtn.classList.add('hidden');
         };
 
         function renderMealsList() {
@@ -194,7 +265,14 @@
 
             items.sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, cost]) => {
                 const el = document.createElement('div');
-                el.className = 'flex justify-between items-center p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm hover:shadow-md transition-shadow';
+                const isEditingThis = editingMealName === name;
+                
+                // Highlight the row if it's currently being edited
+                el.className = `flex justify-between items-center p-4 bg-white dark:bg-slate-900 border rounded-xl shadow-sm hover:shadow-md transition-shadow ${isEditingThis ? 'border-indigo-500 ring-1 ring-indigo-500' : 'border-slate-200 dark:border-slate-700'}`;
+                
+                // Escape quotes for inline event handlers
+                const safeName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                
                 el.innerHTML = `
                     <div class="flex items-center gap-3">
                         <div class="w-10 h-10 rounded-lg bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold">
@@ -207,7 +285,14 @@
                     </div>
                     <div class="flex items-center gap-4">
                         <div class="font-black text-slate-800 dark:text-white font-mono">${formatter.format(cost)}</div>
-                        <button onclick="removeMealVariety('${name.replace(/'/g, "\\'")}')" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 p-2 rounded-lg transition-colors"><i class="fas fa-trash-alt"></i></button>
+                        <div class="flex gap-2">
+                            <button onclick="editMealVariety('${safeName}', ${cost})" class="text-slate-500 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 dark:bg-slate-800 dark:hover:bg-indigo-900/40 p-2 rounded-lg transition-colors" title="Edit Variety">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button onclick="removeMealVariety('${safeName}')" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 p-2 rounded-lg transition-colors" title="Delete Variety">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                        </div>
                     </div>
                 `;
                 listEl.appendChild(el);
@@ -287,11 +372,16 @@
                     <div class="bg-slate-50 dark:bg-[#151D2C] rounded-[1.5rem] border border-slate-200 dark:border-slate-700/50 p-6 flex flex-col flex-grow h-full">
                         <div class="mb-6">
                             <h3 class="text-[20px] font-extrabold text-slate-800 dark:text-white tracking-tight text-indigo-600 dark:text-indigo-400">Meal Varieties Management</h3>
-                            <p class="text-slate-500 dark:text-slate-400 text-xs font-medium mt-1">Add or remove individual meal item varieties. These configurations are synced across KDC and ALC operations.</p>
+                            <p class="text-slate-500 dark:text-slate-400 text-xs font-medium mt-1">Add, edit, or remove individual meal item varieties. These configurations are synced across KDC and ALC operations.</p>
                         </div>
 
-                        <!-- Add Form -->
-                        <div class="flex gap-3 mb-6 bg-white dark:bg-[#0B1221] p-3 rounded-2xl border border-slate-200 dark:border-slate-700/50 items-center shadow-sm">
+                        <!-- Add/Edit Form -->
+                        <div class="flex gap-3 mb-6 bg-white dark:bg-[#0B1221] p-3 rounded-2xl border border-slate-200 dark:border-slate-700/50 items-center shadow-sm relative">
+                            <!-- Cancel Edit Button (Hidden by default) -->
+                            <button id="cancel-edit-btn" onclick="resetForm()" class="hidden absolute -top-3 -right-3 bg-slate-800 hover:bg-slate-700 text-white rounded-full w-8 h-8 flex items-center justify-center shadow-md border border-slate-600 transition-colors z-10" title="Cancel Editing">
+                                <i class="fas fa-times"></i>
+                            </button>
+
                             <div class="flex-grow pl-2">
                                 <label class="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Meal Variety</label>
                                 <input type="text" id="new-meal-name" placeholder="e.g., Fish Meal" class="w-full bg-transparent text-slate-800 dark:text-white text-sm font-bold outline-none">
@@ -300,8 +390,8 @@
                                 <label class="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Cost (LKR)</label>
                                 <input type="number" id="new-meal-cost" placeholder="0.00" class="w-full bg-transparent text-slate-800 dark:text-white text-sm font-bold outline-none font-mono">
                             </div>
-                            <button onclick="addMealVariety()" class="w-12 h-12 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-md transition-colors shrink-0">
-                                <i class="fas fa-plus"></i>
+                            <button id="meal-action-btn" onclick="saveMealVariety()" class="w-12 h-12 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-md transition-colors shrink-0">
+                                <i id="meal-action-icon" class="fas fa-plus"></i>
                             </button>
                         </div>
 
