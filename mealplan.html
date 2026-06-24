@@ -56,7 +56,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, onSnapshot, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, doc, getDoc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Firebase Config
         const appConfig = {
@@ -180,36 +180,46 @@
             const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen');
             
             try {
-                await setDoc(settingsRef, { mealItems: updatedItems }, { merge: true });
+                // updateDoc fully replaces the map, successfully deleting missing keys
+                await updateDoc(settingsRef, { mealItems: updatedItems });
                 resetForm();
                 window.showToast(editingMealName ? `Updated ${name}.` : `Added ${name} to Meal Varieties.`, "success");
             } catch (err) {
-                window.showToast("Failed to save meal variety.", "error");
-                console.error(err);
+                if (err.code === 'not-found') {
+                    // Document doesn't exist yet, create it
+                    await setDoc(settingsRef, { mealItems: updatedItems });
+                    resetForm();
+                    window.showToast(editingMealName ? `Updated ${name}.` : `Added ${name} to Meal Varieties.`, "success");
+                } else {
+                    window.showToast("Failed to save meal variety.", "error");
+                    console.error(err);
+                }
             }
         };
 
         window.removeMealVariety = async (name) => {
             if (!confirm(`Delete ${name} from Meal Varieties?`)) return;
             
-            // If the item being deleted is currently being edited, reset the form
-            if (editingMealName === name) {
-                resetForm();
-            }
+            if (editingMealName === name) resetForm();
 
             const updatedItems = { ...mealItems };
             delete updatedItems[name];
             
             const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'system_settings', 'canteen');
             try {
-                await setDoc(settingsRef, { mealItems: updatedItems }, { merge: true });
+                await updateDoc(settingsRef, { mealItems: updatedItems });
                 window.showToast(`Removed ${name}.`, "success");
             } catch (err) {
-                window.showToast("Failed to remove meal variety.", "error");
-                console.error(err);
+                 if (err.code === 'not-found') {
+                    await setDoc(settingsRef, { mealItems: updatedItems });
+                    window.showToast(`Removed ${name}.`, "success");
+                 } else {
+                    window.showToast("Failed to remove meal variety.", "error");
+                    console.error(err);
+                 }
             }
         };
-        
+
         window.editMealVariety = (name, cost) => {
             editingMealName = name;
             
@@ -229,7 +239,6 @@
             
             cancelBtn.classList.remove('hidden');
             
-            // Focus the cost input for quick updates
             costInput.focus();
         };
 
@@ -242,15 +251,15 @@
             const actionIcon = document.getElementById('meal-action-icon');
             const cancelBtn = document.getElementById('cancel-edit-btn');
             
-            nameInput.value = '';
-            costInput.value = '';
+            if(nameInput) nameInput.value = '';
+            if(costInput) costInput.value = '';
             
-            // Reset button UI
-            actionBtn.classList.add('bg-indigo-600', 'hover:bg-indigo-500');
-            actionBtn.classList.remove('bg-emerald-600', 'hover:bg-emerald-500');
-            actionIcon.className = 'fas fa-plus';
-            
-            cancelBtn.classList.add('hidden');
+            if(actionBtn) {
+                actionBtn.classList.add('bg-indigo-600', 'hover:bg-indigo-500');
+                actionBtn.classList.remove('bg-emerald-600', 'hover:bg-emerald-500');
+            }
+            if(actionIcon) actionIcon.className = 'fas fa-plus';
+            if(cancelBtn) cancelBtn.classList.add('hidden');
         };
 
         function renderMealsList() {
@@ -267,10 +276,8 @@
                 const el = document.createElement('div');
                 const isEditingThis = editingMealName === name;
                 
-                // Highlight the row if it's currently being edited
                 el.className = `flex justify-between items-center p-4 bg-white dark:bg-slate-900 border rounded-xl shadow-sm hover:shadow-md transition-shadow ${isEditingThis ? 'border-indigo-500 ring-1 ring-indigo-500' : 'border-slate-200 dark:border-slate-700'}`;
                 
-                // Escape quotes for inline event handlers
                 const safeName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
                 
                 el.innerHTML = `
